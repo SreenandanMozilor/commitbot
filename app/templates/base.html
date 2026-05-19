@@ -1,0 +1,1195 @@
+{# v0.3.0 base layout.
+
+Design system: refined editorial.
+  - Display: Instrument Serif (italic display headings)
+  - Body: Geist Sans (modern, warm, highly readable)
+  - Meta: JetBrains Mono (timestamps, codes, technical labels)
+
+Theme: light + dark + auto.
+  - {{ theme }} comes from the cookie, set via POST /theme.
+  - `data-theme="..."` on <html> drives the CSS variables.
+  - When theme=auto, prefers-color-scheme decides via media query.
+#}
+{% set theme = theme or "auto" %}
+<!DOCTYPE html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}CommitBot{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/htmx.org@2.0.2"></script>
+<style>
+  /* =====================================================================
+     COLOR SYSTEM
+     ===================================================================== */
+
+  :root,
+  :root[data-theme="light"] {
+    --bg:           #fbfaf7;
+    --bg-elevated: #ffffff;
+    --bg-sunken:   #f3f1ec;
+    --bg-tinted:   #f7f5ef;
+
+    --ink:          #15151a;
+    --ink-soft:     #3a3a44;
+    --ink-muted:    #6b6b75;
+    --ink-faint:    #9a9aa0;
+
+    --rule:         #e6e3dc;
+    --rule-strong:  #d4d0c5;
+    --rule-faint:   #efece4;
+
+    --accent:       #2454ff;
+    --accent-soft:  #e8edff;
+    --accent-ink:   #0a2a99;
+
+    --success:      #2c7a4a;
+    --success-soft: #e4f1ea;
+    --warning:      #9c5a00;
+    --warning-soft: #fbeed3;
+    --danger:       #b8331f;
+    --danger-soft:  #fbe3df;
+
+    --shadow-sm:    0 1px 2px rgba(20, 20, 26, 0.04);
+    --shadow:       0 2px 8px rgba(20, 20, 26, 0.06);
+    --shadow-lg:    0 8px 32px rgba(20, 20, 26, 0.08);
+  }
+
+  :root[data-theme="dark"] {
+    --bg:           #0e0e11;
+    --bg-elevated: #161619;
+    --bg-sunken:   #07070a;
+    --bg-tinted:   #1a1a1f;
+    --ink:          #ece9e0;
+    --ink-soft:     #c8c4b8;
+    --ink-muted:    #8a8678;
+    --ink-faint:    #5a564a;
+    --rule:         #25252c;
+    --rule-strong:  #32323a;
+    --rule-faint:   #1d1d24;
+    --accent:       #6b8aff;
+    --accent-soft:  #1a2348;
+    --accent-ink:   #b4c2ff;
+    --success:      #5fb87f;
+    --success-soft: #1a2e22;
+    --warning:      #d9a040;
+    --warning-soft: #2e2517;
+    --danger:       #e07555;
+    --danger-soft:  #2e1a16;
+    --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow:       0 2px 12px rgba(0, 0, 0, 0.5);
+    --shadow-lg:    0 8px 32px rgba(0, 0, 0, 0.6);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] {
+      --bg:           #0e0e11;
+      --bg-elevated: #161619;
+      --bg-sunken:   #07070a;
+      --bg-tinted:   #1a1a1f;
+      --ink:          #ece9e0;
+      --ink-soft:     #c8c4b8;
+      --ink-muted:    #8a8678;
+      --ink-faint:    #5a564a;
+      --rule:         #25252c;
+      --rule-strong:  #32323a;
+      --rule-faint:   #1d1d24;
+      --accent:       #6b8aff;
+      --accent-soft:  #1a2348;
+      --accent-ink:   #b4c2ff;
+      --success:      #5fb87f;
+      --success-soft: #1a2e22;
+      --warning:      #d9a040;
+      --warning-soft: #2e2517;
+      --danger:       #e07555;
+      --danger-soft:  #2e1a16;
+      --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.4);
+      --shadow:       0 2px 12px rgba(0, 0, 0, 0.5);
+      --shadow-lg:    0 8px 32px rgba(0, 0, 0, 0.6);
+    }
+  }
+
+  /* =====================================================================
+     RESET + BASE
+     ===================================================================== */
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  html { color-scheme: light dark; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Geist', system-ui, -apple-system, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.55;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  .serif       { font-family: 'Instrument Serif', Georgia, serif; }
+  .mono, code  { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  code         { font-size: 0.9em; background: var(--bg-sunken); padding: 1px 5px; border-radius: 3px; }
+
+  a {
+    color: var(--accent);
+    text-decoration: none;
+    transition: color 0.15s ease;
+  }
+  a:hover { color: var(--accent-ink); }
+
+  /* =====================================================================
+     LAYOUT
+     ===================================================================== */
+
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 36px 28px 96px;
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 24px 18px 64px; }
+  }
+
+  /* =====================================================================
+     HEADER
+     ===================================================================== */
+
+  header.site {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    padding-bottom: 18px;
+    margin-bottom: 36px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header.site .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 2px;
+    text-decoration: none;
+    color: var(--ink);
+  }
+  header.site .brand .word {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 28px;
+    font-style: italic;
+    line-height: 1;
+    letter-spacing: -0.01em;
+  }
+  header.site .brand .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+    margin: 0 6px 4px;
+    transition: background 0.2s ease;
+  }
+  header.site .brand:hover .dot { background: var(--ink); }
+  header.site nav {
+    margin-left: auto;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  header.site nav a.tab {
+    font-family: 'Geist', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink-muted);
+    padding: 6px 12px;
+    border-radius: 6px;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+  }
+  header.site nav a.tab:hover {
+    color: var(--ink);
+    background: var(--bg-tinted);
+  }
+  header.site nav a.tab.current {
+    color: var(--ink);
+    background: var(--bg-tinted);
+  }
+  header.site nav .util-divider {
+    width: 1px; height: 18px;
+    background: var(--rule); margin: 0 6px;
+  }
+  header.site nav .util {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+    padding: 4px 8px;
+    text-decoration: none;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-radius: 4px;
+  }
+  header.site nav .util:hover { color: var(--ink); background: var(--bg-tinted); }
+
+  /* Sign-out: a <button> styled to match the .tab nav links exactly. The
+     default `button` rules would otherwise paint it with a border + filled
+     background, making it look like a primary action. */
+  header.site nav .logout-form { display: inline; margin: 0; padding: 0; }
+  header.site nav .logout-btn {
+    font-family: 'Geist', sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink-muted);
+    background: transparent;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    line-height: 1.2;
+  }
+  header.site nav .logout-btn:hover {
+    color: var(--ink);
+    background: var(--bg-tinted);
+  }
+
+  /* Theme toggle button */
+  .theme-toggle {
+    display: inline-flex; gap: 2px;
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    padding: 2px;
+    background: var(--bg-elevated);
+  }
+  .theme-toggle button {
+    width: 28px; height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--ink-muted);
+    cursor: pointer;
+    border-radius: 5px;
+    padding: 0;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .theme-toggle button:hover { color: var(--ink); }
+  .theme-toggle button.active {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .theme-toggle svg { width: 13px; height: 13px; }
+  .theme-toggle form { display: contents; margin: 0; padding: 0; }
+
+  /* =====================================================================
+     TYPOGRAPHY HIERARCHY
+     ===================================================================== */
+
+  h1.page-title {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 44px;
+    font-style: italic;
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    font-weight: 400;
+    margin: 0 0 4px;
+    color: var(--ink);
+  }
+  .page-lede {
+    color: var(--ink-muted);
+    font-size: 16px;
+    margin: 0 0 32px;
+    max-width: 60ch;
+  }
+  h2.section-heading {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 26px;
+    font-weight: 400;
+    font-style: italic;
+    letter-spacing: -0.01em;
+    margin: 0 0 4px;
+    color: var(--ink);
+  }
+  .section-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    margin: 0 0 18px;
+  }
+
+  .tagline {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    color: var(--ink-muted);
+    font-size: 18px;
+    margin: -8px 0 32px;
+  }
+
+  /* =====================================================================
+     STATE TABS
+     ===================================================================== */
+
+  .state-tabs {
+    display: flex;
+    gap: 2px;
+    background: var(--bg-tinted);
+    border-radius: 9px;
+    padding: 4px;
+    margin-bottom: 28px;
+    overflow-x: auto;
+  }
+  .state-tabs a {
+    text-decoration: none;
+    padding: 7px 14px;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink-muted);
+    border-radius: 6px;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .state-tabs a:hover { color: var(--ink); }
+  .state-tabs a.active {
+    background: var(--bg-elevated);
+    color: var(--ink);
+    box-shadow: var(--shadow-sm);
+  }
+  .state-tabs .count {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+    background: var(--bg-sunken);
+    padding: 1px 6px;
+    border-radius: 8px;
+    min-width: 18px;
+    text-align: center;
+  }
+  .state-tabs a.active .count {
+    color: var(--ink-muted);
+    background: var(--bg-tinted);
+  }
+
+  /* =====================================================================
+     COMMITMENT CARDS
+     ===================================================================== */
+
+  .commitment {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 18px;
+    padding: 20px;
+    /* extra bottom padding leaves room for the absolutely-positioned
+       .outcome-tag chip so it doesn't crowd the action buttons. */
+    padding-bottom: 28px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    align-items: start;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    position: relative;
+  }
+
+  /* Small outcome tag in the bottom-right corner of terminal commitment
+     cards (complete / archived / deleted). The inline `.pill` in the meta
+     row tells you the same thing as you scan; this corner chip is the
+     ambient visual cue you can spot from across the page. */
+  .outcome-tag {
+    position: absolute;
+    bottom: 8px;
+    right: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    pointer-events: none;  /* purely decorative — don't intercept clicks */
+  }
+  .outcome-tag.success {
+    color: var(--success);
+    background: var(--success-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--success) 25%, transparent);
+  }
+  .outcome-tag.failed {
+    color: var(--danger);
+    background: var(--danger-soft);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 25%, transparent);
+  }
+  .commitment:hover {
+    border-color: var(--rule-strong);
+    box-shadow: var(--shadow-sm);
+  }
+  .commitment .body { min-width: 0; }
+  .commitment .text {
+    font-size: 17px;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--ink);
+    word-wrap: break-word;
+  }
+  .commitment .meta {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    align-items: center;
+    font-size: 13px;
+    color: var(--ink-muted);
+  }
+  .commitment .meta .dot-sep { color: var(--ink-faint); }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--bg-tinted);
+    color: var(--ink-muted);
+  }
+  .pill.source {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+  }
+  .pill.priority {
+    background: var(--bg-tinted);
+    color: var(--ink-soft);
+  }
+  .pill.priority .swatch {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .pill.recipients {
+    background: var(--accent-soft);
+    color: var(--accent-ink);
+    font-weight: 500;
+  }
+  .pill.deadline-due-soon {
+    background: var(--warning-soft);
+    color: var(--warning);
+  }
+  .pill.deadline-overdue {
+    background: var(--danger-soft);
+    color: var(--danger);
+    font-weight: 600;
+  }
+
+  .row-version {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--ink-faint);
+  }
+
+  .commitment .actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  /* Reassign panel — same disclosure pattern as .edit-panel. Kept as a
+     separate class so the styling can drift later (different default open
+     state, color treatment for the "hand off" semantics) without coupling. */
+  .reassign-panel {
+    margin-top: 10px;
+    border-top: 1px solid var(--rule-faint);
+    padding-top: 14px;
+  }
+  .reassign-panel > summary {
+    cursor: pointer;
+    font-size: 12.5px;
+    color: var(--accent);
+    list-style: none;
+    user-select: none;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: color 0.15s;
+  }
+  .reassign-panel > summary::-webkit-details-marker { display: none; }
+  .reassign-panel > summary::before {
+    content: "›";
+    display: inline-block;
+    transition: transform 0.15s;
+    color: var(--ink-faint);
+  }
+  .reassign-panel[open] > summary::before { transform: rotate(90deg); }
+  .reassign-panel > summary:hover { color: var(--accent-ink); }
+  .reassign-panel form { margin-top: 12px; }
+
+  /* Outgoing pending reassignment summary (in the REASSIGNED tab). */
+  .reassign-pending {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: var(--bg-tinted);
+    border-radius: 8px;
+    border-left: 3px solid var(--accent);
+  }
+  .reassign-pending .pill { margin-right: 6px; }
+
+  /* Incoming reassignment cards (top-of-page banner). */
+  .incoming-reassignments {
+    margin: 0 0 32px;
+    padding: 18px 22px;
+    background: var(--accent-soft);
+    border-radius: 12px;
+    border: 1px solid var(--accent);
+  }
+  .incoming-reassignments .section-heading { color: var(--accent-ink); }
+  .incoming-reassignments .section-meta { color: var(--accent-ink); opacity: 0.75; }
+  .reassign-card {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 18px;
+    padding: 14px 16px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    margin-top: 12px;
+    align-items: center;
+  }
+  .reassign-card .body { min-width: 0; }
+  .reassign-card .text {
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--ink);
+    word-wrap: break-word;
+  }
+  .reassign-card .meta {
+    margin-top: 6px;
+    display: flex; flex-wrap: wrap; gap: 6px 10px;
+    font-size: 13px;
+    color: var(--ink-muted);
+  }
+  .reassign-card .actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .reassign-note {
+    margin: 8px 0 0;
+    padding: 8px 12px;
+    border-left: 2px solid var(--rule);
+    color: var(--ink-soft);
+    font-style: italic;
+    font-size: 13.5px;
+    background: var(--bg-tinted);
+    border-radius: 0 6px 6px 0;
+  }
+
+  /* Edit panel */
+  .edit-panel {
+    margin-top: 14px;
+    border-top: 1px solid var(--rule-faint);
+    padding-top: 14px;
+  }
+  .edit-panel > summary {
+    cursor: pointer;
+    font-size: 12.5px;
+    color: var(--ink-muted);
+    list-style: none;
+    user-select: none;
+    display: inline-flex; align-items: center; gap: 4px;
+    transition: color 0.15s;
+  }
+  .edit-panel > summary::-webkit-details-marker { display: none; }
+  .edit-panel > summary::before {
+    content: "›";
+    display: inline-block;
+    transition: transform 0.15s;
+    color: var(--ink-faint);
+  }
+  .edit-panel[open] > summary::before { transform: rotate(90deg); }
+  .edit-panel > summary:hover { color: var(--ink); }
+  .edit-panel form {
+    margin-top: 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    align-items: start;
+  }
+  .edit-panel form .full { grid-column: 1 / -1; }
+  .edit-panel form .actions-row {
+    grid-column: 1 / -1;
+    display: flex; gap: 8px; justify-content: flex-end; align-items: center;
+  }
+
+  /* "Unsaved changes" badge — appears inside the edit-panel <summary> when
+     any field in a `data-dirty-form` differs from its initial value. Sits
+     inside the summary so it stays visible if the user collapses the panel
+     mid-edit. JS hook lives at the bottom of base.html. */
+  .dirty-flag {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--warning);
+    background: var(--warning-soft);
+    padding: 3px 7px;
+    border-radius: 4px;
+    margin-left: 10px;
+    vertical-align: 1px;
+  }
+  .dirty-flag[hidden] { display: none; }
+
+  /* =====================================================================
+     BUTTONS
+     ===================================================================== */
+
+  button, .btn {
+    font-family: 'Geist', system-ui, sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 7px 12px;
+    background: var(--bg-elevated);
+    color: var(--ink);
+    border: 1px solid var(--rule);
+    border-radius: 7px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+  button:hover, .btn:hover {
+    border-color: var(--rule-strong);
+    background: var(--bg-tinted);
+  }
+  button:active, .btn:active {
+    transform: translateY(0.5px);
+  }
+  button.primary, .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+  button.primary:hover, .btn.primary:hover {
+    background: var(--accent-ink);
+    border-color: var(--accent-ink);
+    color: white;
+  }
+  :root[data-theme="dark"] button.primary,
+  :root[data-theme="dark"] .btn.primary { color: var(--bg); }
+  @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] button.primary,
+    :root[data-theme="auto"] .btn.primary { color: var(--bg); }
+  }
+
+  button.success {
+    background: var(--success-soft);
+    border-color: transparent;
+    color: var(--success);
+  }
+  button.success:hover {
+    background: var(--success);
+    color: white;
+    border-color: var(--success);
+  }
+  button.danger {
+    color: var(--danger);
+    border-color: var(--rule);
+  }
+  button.danger:hover {
+    background: var(--danger-soft);
+    border-color: var(--danger);
+    color: var(--danger);
+  }
+  button.ghost {
+    background: transparent;
+    border-color: transparent;
+    color: var(--ink-muted);
+  }
+  button.ghost:hover {
+    color: var(--ink);
+    background: var(--bg-tinted);
+  }
+  button.small {
+    font-size: 12px;
+    padding: 5px 10px;
+  }
+
+  /* =====================================================================
+     FORMS
+     ===================================================================== */
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-soft);
+    margin-bottom: 6px;
+  }
+  .hint {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--ink-muted);
+    line-height: 1.45;
+  }
+
+  input[type=text], input[type=time], input[type=number],
+  input[type=datetime-local], input[type=color], select, textarea {
+    font-family: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    padding: 8px 11px;
+    border: 1px solid var(--rule);
+    background: var(--bg-elevated);
+    border-radius: 7px;
+    width: 100%;
+    line-height: 1.4;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  textarea {
+    line-height: 1.5;
+    resize: vertical;
+    min-height: 60px;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  input[type=color] {
+    padding: 2px;
+    height: 38px;
+    cursor: pointer;
+  }
+
+  /* Custom checkboxes */
+  .check {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: 10px 0;
+    cursor: pointer;
+  }
+  .check input[type=checkbox] {
+    appearance: none;
+    width: 18px; height: 18px;
+    border: 1.5px solid var(--rule-strong);
+    border-radius: 5px;
+    background: var(--bg-elevated);
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-top: 1px;
+    transition: all 0.15s ease;
+    position: relative;
+  }
+  .check input[type=checkbox]:checked {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .check input[type=checkbox]:checked::after {
+    content: "";
+    position: absolute;
+    left: 5px; top: 1px;
+    width: 5px; height: 10px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .check label {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--ink);
+    cursor: pointer;
+    line-height: 1.5;
+  }
+  .check label small {
+    display: block;
+    color: var(--ink-muted);
+    font-size: 13px;
+    margin-top: 2px;
+  }
+
+  /* =====================================================================
+     SECTIONS / CARDS
+     ===================================================================== */
+
+  section.panel {
+    margin: 56px 0;
+  }
+  section.panel:first-of-type { margin-top: 0; }
+
+  .card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 24px;
+  }
+  .card + .card { margin-top: 12px; }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--rule);
+    margin: 32px 0;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    align-items: start;
+  }
+  .form-grid .span-2 { grid-column: span 2; }
+  .form-grid .full { grid-column: 1 / -1; }
+  @media (max-width: 540px) {
+    .form-grid { grid-template-columns: 1fr; }
+    .form-grid .span-2 { grid-column: span 1; }
+  }
+
+  .config-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    margin-bottom: 8px;
+  }
+  .config-row .row-main {
+    display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1;
+  }
+  .config-row .row-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    color: var(--ink-muted);
+    white-space: nowrap;
+  }
+  .config-row .row-actions { display: flex; gap: 6px; }
+  .config-row form { margin: 0; }
+  .swatch {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1);
+  }
+  .config-row strong {
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .badge {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--ink-muted);
+    background: var(--bg-tinted);
+  }
+
+  @media (max-width: 640px) {
+    .config-row { flex-wrap: wrap; }
+    .config-row .row-meta { width: 100%; padding-left: 22px; }
+  }
+
+  details.add-form {
+    border: 1px dashed var(--rule-strong);
+    border-radius: 9px;
+    padding: 14px 18px;
+    background: var(--bg-tinted);
+    margin-top: 16px;
+  }
+  details.add-form[open] {
+    border-style: solid;
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-sm);
+  }
+  details.add-form > summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--accent);
+    font-size: 14px;
+    user-select: none;
+    list-style: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  details.add-form > summary::-webkit-details-marker { display: none; }
+  details.add-form > summary::before {
+    content: "+";
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 16px;
+    line-height: 1;
+  }
+  details.add-form[open] > summary::before { content: "−"; }
+  details.add-form[open] > summary { margin-bottom: 16px; }
+
+  .new-commitment {
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 16px 20px;
+    background: var(--bg-elevated);
+    margin-bottom: 24px;
+  }
+  .new-commitment > summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--accent);
+    font-size: 14.5px;
+    user-select: none;
+    list-style: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .new-commitment > summary::-webkit-details-marker { display: none; }
+  .new-commitment > summary::before {
+    content: "+";
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 18px;
+    line-height: 1;
+  }
+  .new-commitment[open] > summary::before { content: "−"; }
+  .new-commitment[open] > summary { margin-bottom: 16px; }
+
+  .empty-state {
+    text-align: center;
+    padding: 80px 24px;
+    color: var(--ink-muted);
+  }
+  .empty-state h3 {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 24px;
+    color: var(--ink-soft);
+    margin: 0 0 8px;
+  }
+
+  ul.rules {
+    margin: 8px 0;
+    padding: 0 0 0 18px;
+    color: var(--ink-soft);
+    font-size: 13.5px;
+  }
+  ul.rules li { margin: 4px 0; line-height: 1.5; }
+  ul.rules li code {
+    background: var(--bg-tinted);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 12.5px;
+  }
+
+  form.inline {
+    display: flex; gap: 10px; align-items: stretch;
+    margin: 16px 0 0;
+  }
+  form.inline input[type=text] { flex: 1; min-width: 200px; }
+
+  .htmx-swapping { opacity: 0; transition: opacity 120ms ease; }
+
+  /* =====================================================================
+     TOASTS
+     ===================================================================== */
+
+  #toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 380px;
+    width: calc(100vw - 40px);
+    pointer-events: none;
+  }
+  .toast {
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--ink-muted);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    box-shadow: var(--shadow-lg);
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--ink);
+    pointer-events: auto;
+    opacity: 0;
+    transform: translateX(20px);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+  .toast.toast-show  { opacity: 1; transform: translateX(0); }
+  .toast.toast-hide  { opacity: 0; transform: translateX(20px); }
+  .toast .msg { flex: 1; word-wrap: break-word; }
+  .toast button.dismiss {
+    background: transparent;
+    border: none;
+    color: var(--ink-faint);
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 2px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .toast button.dismiss:hover { color: var(--ink); background: transparent; }
+  .toast-success { border-left-color: var(--success); }
+  .toast-error   { border-left-color: var(--danger); }
+  .toast-warning { border-left-color: var(--warning); }
+  .toast-info    { border-left-color: var(--accent); }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button:focus-visible {
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="site">
+    <a class="brand" href="/">
+      <span class="word">commit</span>
+      <span class="dot"></span>
+      <span class="word">bot</span>
+    </a>
+    <nav>
+      {% set current = request.url.path if request else '/' %}
+      {% if user %}
+      <a class="tab {% if current == '/' %}current{% endif %}" href="/">Commitments</a>
+      <a class="tab {% if current == '/settings' %}current{% endif %}" href="/settings">Settings</a>
+      <span class="util-divider"></span>
+      <a class="util" href="/export/json">json</a>
+      <a class="util" href="/export/csv">csv</a>
+      <span class="util-divider"></span>
+      <form method="post" action="/auth/logout" class="logout-form">
+        <button type="submit" class="tab logout-btn"
+                title="Sign out{% if user.display_name %} ({{ user.display_name }}){% endif %}">
+          {% if user.display_name %}{{ user.display_name }} · {% endif %}Sign out
+        </button>
+      </form>
+      <span class="util-divider"></span>
+      {% endif %}
+      <div class="theme-toggle" role="group" aria-label="Theme">
+        {% for opt, icon_svg in [
+          ('light', '<circle cx="8" cy="8" r="3.2" stroke="currentColor" stroke-width="1.5" fill="none"/><g stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="8" y1="1.5" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="14.5"/><line x1="1.5" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="14.5" y2="8"/><line x1="3.4" y1="3.4" x2="4.5" y2="4.5"/><line x1="11.5" y1="11.5" x2="12.6" y2="12.6"/><line x1="3.4" y1="12.6" x2="4.5" y2="11.5"/><line x1="11.5" y1="4.5" x2="12.6" y2="3.4"/></g>'),
+          ('auto', '<rect x="2" y="3" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4" fill="none"/><line x1="5" y1="14" x2="11" y2="14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'),
+          ('dark', '<path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/>')
+        ] %}
+        <form method="post" action="/theme">
+          <input type="hidden" name="theme" value="{{ opt }}">
+          <input type="hidden" name="redirect" value="{{ request.url.path ~ '?' ~ request.url.query if request and request.url.query else request.url.path }}">
+          <button type="submit" class="{% if theme == opt %}active{% endif %}"
+                  title="{{ opt | capitalize }} theme" aria-label="{{ opt | capitalize }} theme">
+            <svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">{{ icon_svg | safe }}</svg>
+          </button>
+        </form>
+        {% endfor %}
+      </div>
+    </nav>
+  </header>
+  {% block body %}{% endblock %}
+</div>
+
+<div id="toast-container" aria-live="polite" aria-atomic="true"></div>
+<script>
+  (function () {
+    const container = document.getElementById('toast-container');
+
+    function showToast(message, level) {
+      if (!message) return;
+      const lvl = level || 'info';
+      const t = document.createElement('div');
+      t.className = 'toast toast-' + lvl;
+      t.setAttribute('role', lvl === 'error' ? 'alert' : 'status');
+
+      const msg = document.createElement('span');
+      msg.className = 'msg';
+      msg.textContent = message;  // textContent prevents XSS via flash payload
+
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'dismiss';
+      close.setAttribute('aria-label', 'Dismiss');
+      close.innerHTML = '&times;';
+      close.addEventListener('click', () => removeToast(t));
+
+      t.appendChild(msg);
+      t.appendChild(close);
+      container.appendChild(t);
+
+      requestAnimationFrame(() => t.classList.add('toast-show'));
+      const ttl = (lvl === 'error') ? 7000 : 4500;
+      setTimeout(() => removeToast(t), ttl);
+    }
+
+    function removeToast(t) {
+      if (!t.parentElement) return;
+      t.classList.remove('toast-show');
+      t.classList.add('toast-hide');
+      setTimeout(() => t.remove(), 250);
+    }
+
+    window.showToast = showToast;
+
+    // HTMX-triggered toasts: server sends HX-Trigger: {"showToast": {...}}
+    document.body.addEventListener('showToast', function (e) {
+      if (e.detail && typeof e.detail === 'object') {
+        showToast(e.detail.message, e.detail.level);
+      }
+    });
+
+    // "Unsaved changes" indicator. Any form tagged `data-dirty-form` snapshots
+    // its values on load and toggles a sibling `.dirty-flag` badge whenever
+    // any currently-shown value diverges from that snapshot. The badge lives
+    // *outside* the form (typically inside the wrapping <details>'s summary)
+    // so it stays visible when the edit panel is collapsed — the whole point
+    // is to warn users who accidentally close the dropdown that they have
+    // unsaved changes. Submitting reloads the page, resetting the snapshot.
+    document.querySelectorAll('form[data-dirty-form]').forEach(function (form) {
+      // Look up the closest ancestor that also contains the badge — falls
+      // back to within-form if the page chose to place it there instead.
+      const container = form.closest('details, section, article, .edit-panel') || form;
+      const flag = container.querySelector('.dirty-flag') || form.querySelector('.dirty-flag');
+      if (!flag) return;
+      const initial = {};
+      new FormData(form).forEach(function (v, k) { initial[k] = v; });
+      function check() {
+        const current = {};
+        new FormData(form).forEach(function (v, k) { current[k] = v; });
+        let dirty = false;
+        const keys = new Set([...Object.keys(initial), ...Object.keys(current)]);
+        for (const k of keys) {
+          if ((initial[k] || '') !== (current[k] || '')) { dirty = true; break; }
+        }
+        flag.hidden = !dirty;
+      }
+      form.addEventListener('input', check);
+      form.addEventListener('change', check);
+    });
+
+    // Flash cookie: server sets `flash` on a redirect; we read+clear on next render.
+    (function readFlash() {
+      const m = document.cookie.match(/(?:^|;\s*)flash=([^;]+)/);
+      if (!m) return;
+      let raw = m[1];
+      // Python's SimpleCookie wraps values containing special chars in double
+      // quotes — strip them before URL-decoding the JSON payload.
+      if (raw.length >= 2 && raw.charAt(0) === '"' && raw.charAt(raw.length - 1) === '"') {
+        raw = raw.slice(1, -1);
+      }
+      try {
+        const flash = JSON.parse(decodeURIComponent(raw));
+        showToast(flash.message, flash.level);
+      } catch (e) { /* ignore malformed cookie */ }
+      document.cookie = 'flash=; path=/; max-age=0; SameSite=Lax';
+    })();
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,282 @@
+Journal Entry - 18/05/2026
+
+Long session — three big chunks of new work (timezones, OAuth, reassignment),
+two rewrites of the state model after I got it wrong the first time, and a
+proper senior-level audit that caught a real critical bug right before the
+demo. Tests went 42 → 100 across the session.
+
+What I set out to do
+--------------------
+- Stop assuming UTC. People in India, the US, anywhere else need to see
+  their deadlines in their own zone.
+- Fix the auth situation. The dashboard was being "authenticated" by a
+  `?user_id=…` query param, which is to say not authenticated at all.
+- Build the reassignment workflow properly. Schema and stub had been sitting
+  there for days; needed to actually wire it up end-to-end.
+- Sort out the success/failed outcome story I'd been hand-waving about.
+- Audit the whole thing for the demo tomorrow.
+
+Things that got built / fixed
+-----------------------------
+
+1.  Per-user timezone setting (User.tz, IANA name).
+    - New file app/tz.py — only place that knows how to convert UTC ↔ local.
+      Everywhere else stays UTC.
+    - Settings page picker with a datalist of common zones.
+    - Slack Home tab, ping DMs, and the deadline modal now show times in the
+      user's zone — and the deadline modal LABEL changes too ("Time
+      (Asia/Kolkata)" instead of "Time (UTC)").
+    - Snooze-to-tomorrow now computes "tomorrow at 9am" in the user's zone,
+      not UTC.
+    - Idempotent SQLite ALTER TABLE migration runs on boot.
+
+2.  Slack home view redesign.
+    - Was visually busy: bold title + italic meta on one section block.
+      Read jagged.
+    - Now: bold title in a section, muted meta in a context block (Slack
+      renders context smaller), buttons below, divider between items.
+    - Cadence chip added (":bell: every 30m") so users can see their current
+      ping rate at a glance.
+    - Stop/Resume escalation button is context-aware: hidden when at floor.
+
+3.  Big ping bug fix — set_priority didn't reschedule.
+    - Discovered when a colleague set a 1-min priority but got no pings.
+      Root cause: when a commitment was created via /commit, it got the
+      default priority (240m cadence) and a ping was queued for 4 hours
+      later. Reassigning to the 1-min priority via dashboard only flipped
+      the field — the queued ping kept its old 4-hour schedule.
+    - Added services/pings.py reschedule_next_ping(). Called from dashboard
+      edit, Slack deadline-set, Slack escalation-stop/resume.
+
+4.  Owner-check on every Slack action button.
+    - Found by accident: anyone in a channel could press the "Done" button
+      on someone else's commitment in the threaded confirmation. Not great.
+    - Added _is_commitment_owner / _deny_non_owner helpers. Every action
+      handler (done, snooze2h, snoozetomorrow, setdeadline, cleardeadline,
+      stopesc, resumeesc, reassign, cancelra) now verifies the clicker is
+      the owner. Non-owners get an ephemeral ":lock: only @owner can do
+      that" message.
+
+5.  @-mention recipient extraction got smarter.
+    - Was only picking up Slack's <@U12345> auto-substituted mentions, not
+      plain "@sree" typed text. So `/commit @sree I'll send it` didn't
+      record sree as a recipient.
+    - Rewrote _extract_mentions to also catch plain @name (negative
+      lookbehind to skip emails).
+    - Made it opt-in per notation: only patterns containing "@" enable
+      recipient extraction on their captures. Otherwise notations stay
+      silent on mentions.
+
+6.  Sign in with Slack — proper OAuth.
+    - This was the biggest single change. Implemented OpenID Connect
+      against Slack (different endpoint from the bot install OAuth).
+    - app/routes/auth.py with /auth/slack/login, /auth/slack/callback,
+      /auth/logout. State param with secrets.compare_digest for CSRF.
+      Open-redirect guard on the post-login `next` URL.
+    - app/main.py — Starlette SessionMiddleware with signed cookies,
+      SameSite=Lax, 30 day expiry. Added a LoginRequired exception +
+      handler that emits HX-Redirect for HTMX so logged-out HTMX calls
+      do a full-page navigation to login instead of swapping the login
+      HTML into a fragment.
+    - app/routes/dashboard.py — every route now uses required_user (read)
+      or required_user_committing (write) instead of the old
+      _resolve_user(query_param) pattern. ?user_id= is gone everywhere.
+    - All hidden user_id form fields stripped from templates. The HTMX
+      hx-include="#ctx" wiring is gone.
+    - New login.html with a Sign in with Slack button.
+    - Base nav has a "Display Name · Sign out" item styled like a tab.
+      First version was too quiet (looked like the JSON/CSV utility
+      links) and the user couldn't find it.
+
+7.  Onboarding gate.
+    - Realised: a colleague in the workspace could run /commit and the bot
+      would silently log a commitment they could never see (they hadn't
+      signed in to the dashboard).
+    - Added User.signed_in_at — stamped on OAuth callback success.
+    - /commit and "Mark as commitment" now reject users who haven't signed
+      in, with an ephemeral nudge containing the dashboard sign-in link.
+    - Notation auto-capture skips silently for un-onboarded users (didn't
+      want a noisy nudge fired by every passive @mention).
+    - App Home for un-onboarded users now shows a "Welcome — Sign in with
+      Slack" CTA instead of an empty commitments list.
+    - On sign-in we also push views.publish to update the user's App Home
+      in real time, so they get instant feedback in Slack.
+
+8.  Reassignment workflow (the big one).
+    - Service module app/services/reassignments.py — request, accept,
+      decline, cancel, expire_due, list_incoming_pending,
+      list_outgoing_pending. All state transitions live here.
+    - Schema additions to Reassignment: note (free-text), plus
+      notice_channel_id and notice_message_ts so we can chat.update the
+      recipient's DM later with the final outcome.
+    - Scheduler job expire_reassignments every 5min flips PENDING past
+      expires_at to EXPIRED, restores commitment, DMs both parties.
+    - Slack flow: Reassign button on each active commitment in Home tab
+      opens a modal with a users_select + optional note. DM to target
+      with Accept/Decline buttons. Cancel button on owner's outgoing
+      pending. Outcome notifications.
+    - Dashboard flow: incoming-requests banner at top of dashboard;
+      per-commitment Reassign inline form with a dropdown of onboarded
+      teammates only (no free-text typo footguns); REASSIGNED tab.
+    - Edit guard: ON_HOLD with a PENDING reassignment blocks field edits,
+      so Alice can't change the text while Bob is deciding.
+
+9.  State model rework — version 2 of reassignment.
+    - The first version used REASSIGNED as the pending-acceptance limbo
+      state. That was wrong. After thinking about it more, the limbo is
+      really just ON_HOLD (paused while awaiting external input — same
+      shape as a manual hold). And REASSIGNED is more useful as a peer
+      of ACTIVE meaning "this commitment originated as a hand-off and is
+      now being worked on by the new owner."
+    - Reworked all transitions accordingly:
+        ACTIVE → ON_HOLD (limbo, on_hold_resume_at=None so auto-resume
+          doesn't fire — the 24h timer is on Reassignment.expires_at).
+        ON_HOLD → REASSIGNED on accept.
+        ON_HOLD → ACTIVE on decline/cancel/expire.
+    - REASSIGNED commitments ping like ACTIVE. compute_next_ping_at,
+      current_ping_interval_minutes, and reschedule_next_ping all updated.
+    - REASSIGNED can be edited, completed, re-reassigned again.
+
+10. Outcome model (SUCCESS / FAILED).
+    - User wanted "another state" but adding SUCCESS/FAILED as states
+      would have meant COMPLETE_SUCCESS, COMPLETE_FAILED, ARCHIVED_SUCCESS,
+      etc. — combinatorial explosion. Senior call: outcome is orthogonal
+      to lifecycle state. Modelled as a separate column with a 2-value
+      enum.
+    - Rule (one place — compute_outcome): SUCCESS iff completed_at is set
+      AND on time (or no deadline). FAILED otherwise.
+    - Set on every terminal transition (mark_done, soft_delete, archive).
+      Cleared on reopen and restore-to-active. Preserved on
+      restore-to-complete.
+    - UI: Success and Failed tabs that filter across all terminal
+      commitments. Plus a colored chip in the bottom-right of each
+      terminal card (green=success, red=failed).
+    - First version had an inline pill in the meta row AND the corner
+      chip. Removed the pill (redundant once the corner chip was in
+      place).
+
+11. Auto-delete semantics, take 2.
+    - First implementation renamed auto_delete_completed_after_days →
+      auto_archive_completed_after_days and made the action archive
+      regardless of the number. The user wanted the opposite: keep
+      auto-DELETE as the action for X>0 (hard delete after X days), and
+      make 0 the special case that archives instead.
+    - Reverted the rename (column went back to original name, lossless).
+    - Hourly sweep: X>0 → db.delete() commitments older than X days; X=0
+      → archive ALL completed commitments (sweeps regardless of age).
+
+12. Escalation audit + two real bugs caught.
+    - Wrote 30 targeted tests across every branch of compute_next_ping_at.
+    - Bug 1: stop-escalation didn't work when overdue. The "deadline < now
+      → floor" branch ran BEFORE the escalation_enabled check, so pressing
+      Stop on a late commitment kept pinging at the floor cadence. Fixed
+      by reordering: escalation_enabled is checked first now.
+    - Bug 2: escalation_rate < 1.0 would decelerate. The guard was
+      `rate if level.escalation_rate > 0 else 1.0` — only caught the <= 0
+      case. A misconfigured row with rate=0.5 would make
+      `base / 0.5^stages` GROW with stages, inverting escalation. Fixed
+      with max(rate, 1.0). Defensive — the validator already rejects
+      this at creation, but defense-in-depth against a corrupted DB.
+    - Added SYSTEM_MIN_PING_INTERVAL_MINUTES = 1 as an absolute system
+      floor on top of the per-level max_ping_frequency.
+
+Key decisions made today
+------------------------
+- Outcome is a separate field, not a state. Surfaces as filter tabs in
+  the UI so the user gets the success/failed navigation they wanted
+  without the state machine exploding.
+- Reassignment limbo is ON_HOLD; post-acceptance is REASSIGNED. Two
+  different things, two different states.
+- Recipient extraction is opt-in per notation (must contain "@"). Avoids
+  silently capturing mentions on patterns the user didn't intend.
+- Auto-delete at 0 means archive instead. Not "never delete" (which is
+  what it used to mean).
+- Reassignment requires the target to have signed in via OAuth. No
+  drafting people into work they can't see. Alice's modal shows an
+  inline error if Bob hasn't onboarded yet.
+- Dashboard reassign uses a dropdown of onboarded teammates only — no
+  raw Slack ID typing in the web UI.
+
+Bugs caught in the senior audit (last leg of the session)
+---------------------------------------------------------
+Did a slow, file-by-file pass at the end. Found one critical and several
+smaller bugs, all fixed.
+
+Critical:
+- REASSIGNED commitments stopped pinging. The scheduler's
+  process_due_pings filtered for `state != ACTIVE`, so after Bob
+  accepted a hand-off his queued pings got silently marked sent_at
+  without delivery. Real regression from the state-model rework. Fix
+  is a one-liner (include REASSIGNED) but the consequences were
+  serious.
+
+- The migration in db.py had a "cleanup" block that demoted any
+  REASSIGNED commitment without a PENDING reassignment back to
+  ACTIVE. The first time it ran (immediately after the rework) it was
+  correct. On every restart after that, it was wiping the
+  "reassigned" label off Bob's accepted commitments. Removed the
+  block; left a comment explaining what NOT to do.
+
+Significant:
+- global_pause consumed the ping but didn't queue a next one, so
+  unpausing left users with no pending pings until they manually
+  edited something. Fixed: pause now consumes AND schedules the next
+  ping.
+
+Housekeeping:
+- Unused Form import in auth.py.
+- Stale docstrings in scheduler.py (top said "3 jobs," there are 5;
+  auto_resume_on_hold referenced unused blocked_by_id).
+- Confusing `priority_level_id and (db.get(...) if db else None)`
+  ternary in send_ping_dm — rewrote as a normal if-else.
+- Stale demo-seed URL in init_db.py that referenced `?user_id=` from
+  before OAuth.
+
+Added regression tests for the REASSIGNED-ping bug and global_pause bug
+so they can't sneak back in.
+
+Setup hiccups
+-------------
+- Diagnosed an OAuth weirdness mid-session: a colleague signed in via
+  the nudge but /commit still showed the nudge. Added log lines on both
+  the OAuth callback and the /commit gate (printing team_id, user_id,
+  signed_in_at) — turned out the SAEnum was storing outcome values
+  lowercase from an old run of the migration, which made every
+  dashboard read 500 with a LookupError. Fix: normalize the data and
+  make the migration self-heal on every boot.
+- The dashboard's edit panel layout broke when I added a hint under
+  the deadline input — `align-items: end` was pushing the priority
+  dropdown to the bottom of its column. Changed to align-items: start.
+
+End of day state
+----------------
+- 100 tests passing in 3 seconds.
+- Five scheduler jobs running: pings, bin purge, auto-resume, reassign
+  expiry, auto-delete sweep.
+- All capture paths gated on onboarding.
+- Per-action ownership checks on every Slack button.
+- Reassignment workflow end-to-end with 24h expiry, accept/decline DM
+  buttons, cancel, outcome notifications, and Home-tab refresh on
+  every state change.
+- Outcome (Success/Failed) classified on every terminal transition,
+  surfaced as filter tabs and a corner chip.
+- Per-user timezone applied everywhere times are shown or entered.
+- Real Sign in with Slack OAuth on the dashboard.
+
+Open issues for after the demo
+------------------------------
+- Snoozing a REASSIGNED commitment, then auto-resume, lands it in ACTIVE
+  (loses the "reassigned" label). Would need a `prior_state` column to
+  preserve. Same issue applies if Bob re-reassigns to Carol and Carol
+  declines — Bob's REASSIGNED label is lost.
+- Auto-delete at X==0 has up to a 1-hour delay between completion and
+  archive (the sweep is hourly). Could call archive() directly in
+  mark_done if the user has X==0.
+- /commit ValueError after the public message is already posted leaves
+  an orphan channel message. Need to either validate up front or
+  chat.delete the post on failure.
+- SESSION_SECRET is still "change-me-to-a-long-random-string". Pre-demo
+  it doesn't matter; before showing anyone outside the team I should
+  rotate it.
+- The diagnostic "OAuth sign-in:" and "/commit gate:" log lines are
+  noisy but useful. Decide whether to demote to debug.

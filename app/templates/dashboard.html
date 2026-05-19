@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block title %}Commitments — CommitBot{% endblock %}
+{% block body %}
+
+<h1 class="page-title">Your commitments.</h1>
+<p class="page-lede">
+  "I said I'd do that and forgot." Track everything you promised, in
+  Slack or here. We'll nudge you as deadlines approach.
+</p>
+
+{% if incoming_reassignments %}
+<section class="incoming-reassignments">
+  <h2 class="section-heading" style="font-size:20px; margin-bottom:6px;">
+    Awaiting your response
+    <span class="badge" style="vertical-align:6px; color:var(--accent); background:var(--accent-soft);">
+      {{ incoming_reassignments | length }}
+    </span>
+  </h2>
+  <p class="section-meta">Reassignment requests from teammates</p>
+  {% for ir in incoming_reassignments %}
+    <article class="reassign-card" id="incoming-{{ ir.id }}">
+      <div class="body">
+        <div class="text">{{ ir.text }}</div>
+        <div class="meta">
+          <span class="pill recipients">from @{{ ir.from_label }}</span>
+          {% if ir.deadline_local %}
+            <span class="pill">{{ ir.deadline_local }}</span>
+          {% else %}
+            <span class="pill">No deadline</span>
+          {% endif %}
+          <span class="pill" style="color:var(--warning); background:var(--warning-soft);">
+            expires {{ ir.expires_local }}
+          </span>
+        </div>
+        {% if ir.note %}
+          <p class="reassign-note">“{{ ir.note }}”</p>
+        {% endif %}
+      </div>
+      <div class="actions">
+        <form method="post" action="/reassignments/{{ ir.id }}/accept" style="display:inline; margin:0;">
+          <button type="submit" class="success small">Accept</button>
+        </form>
+        <form method="post" action="/reassignments/{{ ir.id }}/decline" style="display:inline; margin:0;"
+              onsubmit="return confirm('Decline this reassignment request?');">
+          <button type="submit" class="danger small">Decline</button>
+        </form>
+      </div>
+    </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+<details class="new-commitment">
+  <summary>
+    New commitment
+    <span class="dirty-flag" hidden aria-live="polite">Unsaved changes</span>
+  </summary>
+  <form class="form-grid" method="post" action="/commitments/new" data-dirty-form>
+    <div class="full">
+      <label for="new-text">What did you commit to?</label>
+      <textarea id="new-text" name="text" rows="2" required
+                placeholder="Send the Q2 retrospective to leadership by Friday"></textarea>
+    </div>
+    <div>
+      <label for="new-deadline">Deadline <span style="color:var(--ink-muted); font-weight:400;">· {{ user_tz_label }}</span></label>
+      <input id="new-deadline" type="datetime-local" name="deadline">
+      <p class="hint">Leave blank for no deadline.</p>
+    </div>
+    <div>
+      <label for="new-priority">Priority</label>
+      <select id="new-priority" name="priority_level_id">
+        <option value="">Default</option>
+        {% for p in priorities %}
+          <option value="{{ p.id }}">{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="full">
+      <label for="new-recipients">
+        Who's this to?
+        <span style="font-weight:400; color:var(--ink-muted);">(optional)</span>
+      </label>
+      <input id="new-recipients" type="text" name="recipients"
+             placeholder="e.g. @priya, @bob — leave blank if it's just for yourself">
+      <p class="hint">Comma-separated. Names or Slack handles both work.</p>
+    </div>
+    <div class="full" style="display:flex; justify-content:flex-end; gap:8px;">
+      <button type="submit" class="primary">Log commitment</button>
+    </div>
+  </form>
+</details>
+
+<div class="state-tabs">
+  {% for s in states %}
+    <a href="/?state={{ s }}"
+       class="{{ 'active' if s == active_state else '' }}">
+      {{ s.replace('_', ' ') | capitalize }}
+      <span class="count" id="count-{{ s }}">{{ counts.get(s, 0) }}</span>
+    </a>
+  {% endfor %}
+</div>
+
+{% if commitments %}
+  {% for c in commitments %}
+    {% set u = urgency.get(c.id, ("none", "")) %}
+    {% set urgency_class = "deadline-" ~ u[0] if u[0] != "none" else "" %}
+    {% set urgency_label = u[1] %}
+
+    <article class="commitment" id="row-{{ c.id }}">
+      <div class="body">
+        <div class="text">{{ c.text }}</div>
+        <div class="meta">
+          <span class="pill source">{{ c.source.value.replace('_', ' ') }}</span>
+
+          {% if c.priority_level_id %}
+            {% for p in priorities %}
+              {% if p.id == c.priority_level_id %}
+                <span class="pill priority">
+                  <span class="swatch" style="background: {{ p.color }};"></span>
+                  {{ p.name }}
+                </span>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+
+          {% if c.deadline %}
+            <span class="pill {{ urgency_class }}">
+              {{ urgency_label }}{{ deadlines_local.get(c.id, c.deadline.strftime('%a %b %d, %H:%M UTC')) }}
+            </span>
+          {% else %}
+            <span class="pill">No deadline</span>
+          {% endif %}
+
+          {% set current_recipients = c.recipients | selectattr('is_current') | list %}
+          {% if current_recipients %}
+            <span class="pill recipients" title="Who this is owed to">
+              → {% for r in current_recipients
+                 %}@{{ recipient_names.get(r.recipient_slack_user_id, r.recipient_slack_user_id) }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </span>
+          {% endif %}
+
+          {% if c.state.value == 'active' and cadences.get(c.id) %}
+            <span class="pill" title="How often you'll be pinged at the moment">
+              🔔 {{ cadences[c.id] }}
+            </span>
+          {% endif %}
+
+          {% if not c.escalation_enabled and c.state.value == 'active' %}
+            <span class="pill" style="color: var(--warning); background: var(--warning-soft);">
+              Escalation off
+            </span>
+          {% endif %}
+
+          <span class="row-version">
+            v{{ c.version }}{% if c.last_writer %} · {{ c.last_writer }}{% endif %}
+          </span>
+        </div>
+
+        {% if c.state.value in ('active', 'on_hold', 'reassigned') %}
+        <details class="edit-panel">
+          <summary>
+            Edit details
+            <span class="dirty-flag" hidden aria-live="polite">Unsaved changes</span>
+          </summary>
+          <form method="post" action="/commitments/{{ c.id }}/edit" data-dirty-form>
+                    <div class="full">
+              <label>Text</label>
+              <textarea name="text" rows="2">{{ c.text }}</textarea>
+            </div>
+            <div>
+              <label>Deadline <span style="color:var(--ink-muted); font-weight:400;">· {{ user_tz_label }}</span></label>
+              <input type="datetime-local" name="deadline"
+                value="{{ deadline_inputs.get(c.id, '') }}">
+            </div>
+            <div>
+              <label>Priority</label>
+              <select name="priority_level_id">
+                {% for p in priorities %}
+                  <option value="{{ p.id }}" {% if c.priority_level_id == p.id %}selected{% endif %}>
+                    {{ p.name }}
+                  </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="full">
+              <label>To (optional)</label>
+              <input type="text" name="recipients"
+                value="{{ c.recipients | selectattr('is_current') | map(attribute='recipient_slack_user_id') | join(', ') }}"
+                placeholder="e.g. @priya, @bob">
+              <p class="hint">Comma-separated. Leave blank to remove all.</p>
+            </div>
+            <div class="actions-row">
+              <button type="submit" class="primary">Save changes</button>
+            </div>
+          </form>
+        </details>
+        {% endif %}
+
+        {% if c.state.value in ('active', 'reassigned') and teammates %}
+        <details class="reassign-panel">
+          <summary>Reassign to a teammate</summary>
+          <form method="post" action="/commitments/{{ c.id }}/reassign">
+            <div class="form-grid">
+              <div>
+                <label>Hand off to</label>
+                <select name="to_slack_user_id" required>
+                  <option value="">Pick someone…</option>
+                  {% for t in teammates %}
+                    <option value="{{ t.slack_user_id }}"
+                            {% if not t.onboarded %}disabled{% endif %}>
+                      {{ t.label }}{% if not t.onboarded %} — not signed in{% endif %}
+                    </option>
+                  {% endfor %}
+                </select>
+                <p class="hint" style="margin-top:6px;">
+                  Members shown as "not signed in" can't be reassignment
+                  targets yet — ask them to visit the dashboard once.
+                </p>
+              </div>
+              <div>
+                <label>Note (optional)</label>
+                <input type="text" name="note" maxlength="500"
+                       placeholder="Why are you handing this off?">
+              </div>
+            </div>
+            <p class="hint" style="margin-top:8px;">
+              They have <strong>24 hours</strong> to accept. If they don't respond,
+              it comes back to you.
+            </p>
+            <div class="actions-row" style="display:flex; justify-content:flex-end; margin-top:10px;">
+              <button type="submit" class="primary small">Send request</button>
+            </div>
+          </form>
+        </details>
+        {% endif %}
+
+        {% if active_state == 'on_hold' and outgoing_by_commitment.get(c.id) %}
+          {% set ra = outgoing_by_commitment[c.id] %}
+          <div class="reassign-pending">
+            <span class="pill" style="color:var(--accent); background:var(--accent-soft);">
+              Pending → {{ ra.target_label }}
+            </span>
+            <span class="pill" style="color:var(--warning); background:var(--warning-soft);">
+              expires {{ ra.expires_local }}
+            </span>
+            {% if ra.note %}
+              <p class="reassign-note" style="margin-top:8px;">“{{ ra.note }}”</p>
+            {% endif %}
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="actions">
+        {% set row_state = c.state.value %}
+        {% if row_state in ('active', 'reassigned') %}
+          <button class="success small"
+                  hx-post="/commitments/{{ c.id }}/done"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Done</button>
+          <button class="small"
+                  hx-post="/commitments/{{ c.id }}/on_hold"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Hold</button>
+          <button class="danger small"
+                  hx-post="/commitments/{{ c.id }}/delete"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Delete</button>
+        {% elif row_state == 'on_hold' %}
+          {% if outgoing_by_commitment.get(c.id) %}
+            <form method="post"
+                  action="/reassignments/{{ outgoing_by_commitment[c.id].id }}/cancel"
+                  onsubmit="return confirm('Cancel this pending reassignment? The commitment comes back to you.');">
+              <button type="submit" class="danger small">Cancel reassignment</button>
+            </form>
+          {% else %}
+            <button class="primary small"
+                    hx-post="/commitments/{{ c.id }}/resume"
+
+                    hx-target="#row-{{ c.id }}"
+                    hx-swap="outerHTML swap:120ms">Resume</button>
+            <button class="danger small"
+                    hx-post="/commitments/{{ c.id }}/delete"
+
+                    hx-target="#row-{{ c.id }}"
+                    hx-swap="outerHTML swap:120ms">Delete</button>
+          {% endif %}
+        {% elif row_state == 'complete' %}
+          <button class="small"
+                  hx-post="/commitments/{{ c.id }}/reopen"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms"
+                  title="Reopen — back to active">Reopen</button>
+          <button class="small"
+                  hx-post="/commitments/{{ c.id }}/archive"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Archive</button>
+          <button class="danger small"
+                  hx-post="/commitments/{{ c.id }}/delete"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Delete</button>
+        {% elif row_state == 'archived' %}
+          <button class="danger small"
+                  hx-post="/commitments/{{ c.id }}/delete"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Delete</button>
+        {% elif row_state == 'deleted' %}
+          <button class="small"
+                  hx-post="/commitments/{{ c.id }}/archive"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms"
+                  title="File away — skips the 48h purge">Archive</button>
+          <button class="primary small"
+                  hx-post="/commitments/{{ c.id }}/restore"
+
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms">Restore</button>
+        {% endif %}
+      </div>
+
+      {# Bottom-right outcome chip. Only on terminal-state rows where an
+         outcome has been computed — keeps live/in-flight rows uncluttered. #}
+      {% if c.outcome and c.state.value in ('complete', 'archived', 'deleted') %}
+        {% if c.outcome.value == 'success' %}
+          <span class="outcome-tag success" aria-label="Completed successfully">Success</span>
+        {% else %}
+          <span class="outcome-tag failed" aria-label="Failed">Failed</span>
+        {% endif %}
+      {% endif %}
+    </article>
+  {% endfor %}
+{% else %}
+  <div class="empty-state">
+    <h3>Nothing in {{ active_state.replace('_', ' ') }}.</h3>
+    {% if active_state == 'active' %}
+      <p>Type <code>/commit something you'll do</code> in any Slack channel,
+         or use the <em>new commitment</em> form above.</p>
+    {% elif active_state == 'on_hold' %}
+      <p>Pause a commitment by clicking <em>Hold</em>. We'll stop pinging
+         until you resume it. Reassignment requests awaiting a response also
+         live here.</p>
+    {% elif active_state == 'reassigned' %}
+      <p>Commitments handed to you by teammates (and you've accepted) show
+         up here. They behave just like active commitments — you'll get
+         pings, can mark them done, edit them, or pass them on again.</p>
+    {% elif active_state == 'success' %}
+      <p>Commitments you completed on time end up here. Finish something
+         before its deadline to add to the pile.</p>
+    {% elif active_state == 'failed' %}
+      <p>Commitments that missed their deadline or were abandoned. Nothing
+         to clean up — they're just here for the historical record.</p>
+    {% elif active_state == 'complete' %}
+      <p>Finished commitments live here. Click <em>Done</em> on an active
+         one to complete it.</p>
+    {% elif active_state == 'deleted' %}
+      <p>Deleted commitments stay here for 48 hours before being purged
+         permanently.</p>
+    {% endif %}
+  </div>
+{% endif %}
+
+{% endblock %}

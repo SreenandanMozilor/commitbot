@@ -1,0 +1,248 @@
+{% extends "base.html" %}
+{% block title %}Settings — CommitBot{% endblock %}
+{% block body %}
+
+<h1 class="page-title">Settings.</h1>
+<p class="page-lede">
+  Configure how CommitBot pings you, what counts as a commitment in chat,
+  and what's visible to your team.
+</p>
+
+{# ============================================================ #}
+<section class="panel">
+  <h2 class="section-heading">
+    Preferences
+    <span class="dirty-flag" hidden aria-live="polite">Unsaved changes</span>
+  </h2>
+  <p class="section-meta">Per-user notification &amp; privacy controls</p>
+
+  <div class="card">
+    <form method="post" action="/settings/preferences" data-dirty-form>
+
+      <div class="check">
+        <input type="checkbox" id="pref-pause" name="global_pause"
+               {% if user.global_pause %}checked{% endif %}>
+        <label for="pref-pause">
+          Pause all pings
+          <small>Stop sending reminders. Commitments are still tracked and visible.</small>
+        </label>
+      </div>
+
+      <div class="check">
+        <input type="checkbox" id="pref-react" name="reaction_signal_enabled"
+               {% if user.reaction_signal_enabled %}checked{% endif %}>
+        <label for="pref-react">
+          🔖 React to captured messages
+          <small>Add a bookmark emoji on every message we log. Off by default — turning this on
+                 tells your channel something was logged.</small>
+        </label>
+      </div>
+
+      <div class="check">
+        <input type="checkbox" id="pref-confirm" name="threaded_confirm_enabled"
+               {% if user.threaded_confirm_enabled %}checked{% endif %}>
+        <label for="pref-confirm">
+          Reply in thread when notations match
+          <small>When a message you sent matches a custom notation, post a quiet
+                 "logged" reply in the thread.</small>
+        </label>
+      </div>
+
+      <hr class="divider" style="margin: 20px 0;">
+
+      <div class="form-grid">
+        <div>
+          <label for="pref-days">Auto-delete completed after</label>
+          <input id="pref-days" type="number" min="0" max="3650"
+                 name="auto_delete_completed_after_days"
+                 value="{{ user.auto_delete_completed_after_days }}">
+          <p class="hint">
+            Days. Completed commitments older than this are permanently
+            deleted (gone for good). Set <code>0</code> to <strong>archive</strong>
+            them instead — they get filed into the <em>Archived</em> tab and
+            kept forever.
+          </p>
+        </div>
+        <div>
+          <label for="pref-sod">Start of day</label>
+          <input id="pref-sod" type="time" name="start_of_day"
+                 value="{{ user.start_of_day.strftime('%H:%M') }}">
+          <p class="hint">"Snooze to tomorrow" resumes at this time (in your timezone).</p>
+        </div>
+        <div>
+          <label for="pref-auto-resume">Auto-resume held commitments</label>
+          <input id="pref-auto-resume" type="number" min="0" max="720"
+                 name="auto_resume_hours_before_deadline"
+                 value="{{ user.auto_resume_hours_before_deadline }}">
+          <p class="hint">
+            Hours before deadline. A commitment you put on hold is
+            automatically resumed when its deadline is this close — so it
+            doesn't quietly slip past. Set <code>0</code> to disable.
+          </p>
+        </div>
+        <div>
+          <label for="pref-tz">Timezone</label>
+          <input id="pref-tz" type="text" name="tz" list="tz-list"
+                 value="{{ user.tz }}" placeholder="Asia/Kolkata">
+          <datalist id="tz-list">
+            {% for z in tz_options %}<option value="{{ z }}"></option>{% endfor %}
+          </datalist>
+          <p class="hint">IANA name (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>). Deadlines are shown and entered in this zone.</p>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 20px;">
+        <button type="submit" class="primary">Save preferences</button>
+      </div>
+    </form>
+  </div>
+</section>
+
+{# ============================================================ #}
+<section class="panel">
+  <h2 class="section-heading">Priority levels</h2>
+  <p class="section-meta">Cadence &amp; escalation per commitment type</p>
+  <p class="hint" style="margin: 0 0 16px;">
+    Each priority defines its own ping cadence and escalation curve. The default level is used
+    for commitments that don't specify one explicitly.
+  </p>
+
+  {% for p in priorities %}
+    <div class="config-row">
+      <div class="row-main">
+        <span class="swatch" style="background: {{ p.color }};"></span>
+        <strong>{{ p.name }}</strong>
+        {% if p.is_system_default %}<span class="badge">Default</span>{% endif %}
+      </div>
+      <span class="row-meta">
+        base {{ p.base_ping_interval_minutes }}m
+        · escalate {{ p.escalation_trigger_hours_before_deadline }}h before
+        · floor {{ p.max_ping_frequency_minutes }}m
+        · ×{{ p.escalation_rate }}
+      </span>
+      <div class="row-actions">
+        {% if not p.is_system_default %}
+        <form method="post" action="/settings/priority/{{ p.id }}/delete"
+              onsubmit="return confirm('Delete priority level &quot;{{ p.name }}&quot;? Commitments using it will be repointed to your default level.');">
+          <button class="danger small" type="submit">Delete</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  {% else %}
+    <div class="empty-state" style="padding: 40px 24px;">
+      <p>No priority levels yet.</p>
+    </div>
+  {% endfor %}
+
+  <details class="add-form">
+    <summary>
+      Add a priority level
+      <span class="dirty-flag" hidden aria-live="polite">Unsaved changes</span>
+    </summary>
+    <form method="post" action="/settings/priority/new" data-dirty-form>
+
+      <div class="form-grid" style="margin-bottom: 16px;">
+        <div class="span-2">
+          <label for="np-name">Name</label>
+          <input id="np-name" type="text" name="name" required placeholder="Urgent">
+        </div>
+        <div>
+          <label for="np-color">Color</label>
+          <input id="np-color" type="color" name="color" value="#c84e2f">
+        </div>
+      </div>
+
+      <div class="form-grid" style="margin-bottom: 16px;">
+        <div>
+          <label for="np-base">Base interval</label>
+          <input id="np-base" type="number" min="1" name="base_ping_interval_minutes" value="60">
+          <p class="hint">Minutes between pings, before escalation.</p>
+        </div>
+        <div>
+          <label for="np-floor">Floor</label>
+          <input id="np-floor" type="number" min="1" name="max_ping_frequency_minutes" value="15">
+          <p class="hint">Fastest the cadence can get, in minutes.</p>
+        </div>
+        <div>
+          <label for="np-rate">Escalation rate</label>
+          <input id="np-rate" type="number" step="0.1" min="1.0" name="escalation_rate" value="2.0">
+          <p class="hint">Each ping inside the window is this much faster.</p>
+        </div>
+        <div>
+          <label for="np-esc">Escalation window</label>
+          <input id="np-esc" type="number" min="0" name="escalation_trigger_hours_before_deadline" value="24">
+          <p class="hint">Hours before deadline when cadence starts shrinking.</p>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end;">
+        <button type="submit" class="primary">Create level</button>
+      </div>
+    </form>
+  </details>
+</section>
+
+{# ============================================================ #}
+<section class="panel">
+  <h2 class="section-heading">Custom notations</h2>
+  <p class="section-meta">Auto-capture commitments from chat patterns · {{ notations | length }} of {{ max_notations }}</p>
+  <p class="hint" style="margin: 0 0 12px;">
+    A regex that, when matched in a Slack message you send, logs the message as a commitment.
+  </p>
+  <ul class="rules">
+    <li>1–128 characters long.</li>
+    <li><code>?</code> is not allowed (collides with normal questions).</li>
+    <li>Must include one of: <code>[[ ]]</code>, <code>&lt;&lt; &gt;&gt;</code>, <code>!commit</code>, <code>/commit</code>.</li>
+    <li>Examples: <code>\[\[commit.*\]\]</code>, <code>!commit\s</code>.</li>
+    <li>
+      <strong>Recipients via <code>@</code> (opt-in per notation):</strong>
+      include <code>@</code> somewhere in the notation pattern itself and any
+      <code>@name</code> in the captured message becomes a recipient — both
+      tab-completed Slack mentions (the blue <code>@priya</code> pill) and
+      plain text like <code>@sree</code>.
+      With notation <code>\[\[commit.*@.*\]\]</code>, a message like
+      <code>[[commit @sree I'll send the report]]</code> logs the commitment
+      with <em>sree</em> as the recipient.
+      If the notation has no <code>@</code> (e.g. <code>\[\[commit.*\]\]</code>),
+      captures from it ignore <code>@</code>-mentions in the message body.
+      Emails (<code>name@host.com</code>) are always ignored.
+    </li>
+  </ul>
+
+  <div style="margin-top: 16px;">
+    {% for n in notations %}
+      <div class="config-row">
+        <div class="row-main">
+          <code>{{ n.pattern }}</code>
+          {% if n.enabled %}
+            <span class="badge" style="color: var(--success); background: var(--success-soft);">Enabled</span>
+          {% else %}
+            <span class="badge">Disabled</span>
+          {% endif %}
+        </div>
+        <div class="row-actions">
+          <form method="post" action="/notations/{{ n.id }}/delete"
+                onsubmit="return confirm('Delete this notation?');">
+            <button class="danger small" type="submit">Delete</button>
+          </form>
+        </div>
+      </div>
+    {% else %}
+      <p class="hint" style="padding: 16px 0;">
+        No notations yet. Add one below to start capturing via plain message text.
+      </p>
+    {% endfor %}
+
+    {% if notations|length < max_notations %}
+      <form class="inline" action="/notations" method="post">
+        <input type="text" name="pattern" placeholder="\[\[commit.*\]\]" required>
+        <button type="submit" class="primary">Add notation</button>
+      </form>
+    {% else %}
+      <p class="hint">Maximum of {{ max_notations }} reached. Delete one to add another.</p>
+    {% endif %}
+  </div>
+</section>
+
+{% endblock %}
