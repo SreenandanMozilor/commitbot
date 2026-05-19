@@ -112,6 +112,7 @@ def process_due_pings() -> None:
 
 def purge_bin() -> None:
     """Hard-delete commitments soft-deleted more than 48 hours ago."""
+    from app.services import commitments as commit_svc
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     with session_scope() as db:
         stale = db.execute(
@@ -122,7 +123,7 @@ def purge_bin() -> None:
         ).scalars().all()
         for c in stale:
             log.info("Purging commitment %s from Bin (deleted at %s)", c.id, c.deleted_at)
-            db.delete(c)
+            commit_svc.hard_delete(db, c)
 
 
 def auto_delete_old_completed() -> None:

@@ -339,6 +339,12 @@
 
                   hx-target="#row-{{ c.id }}"
                   hx-swap="outerHTML swap:120ms">Restore</button>
+          <button class="danger small"
+                  hx-post="/commitments/{{ c.id }}/purge"
+                  hx-target="#row-{{ c.id }}"
+                  hx-swap="outerHTML swap:120ms"
+                  hx-confirm="Permanently delete this commitment? It can't be recovered."
+                  title="Hard-delete now — bypasses the 48h grace">Purge</button>
         {% endif %}
       </div>
 

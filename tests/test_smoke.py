@@ -153,6 +153,59 @@ def test_demo_seed_round_trip():
     print("seed round-trip ok")
 
 
+def test_purge_hard_deletes_a_deleted_commitment():
+    """Hitting POST /commitments/{cid}/purge on a soft-deleted commitment
+    removes the row immediately, bypassing the 48h bin sweep. Also
+    confirms purging a non-deleted commitment is rejected (400)."""
+    _bootstrap_env()
+    for mod_name in list(sys.modules):
+        if mod_name == "app" or mod_name.startswith("app."):
+            del sys.modules[mod_name]
+
+    from app.db import Base, engine, SessionLocal
+    from app import models  # noqa: F401
+    Base.metadata.create_all(engine)
+    from app.init_db import seed_demo
+    seed_demo()
+
+    from app.main import app
+    from app.models import Commitment, CommitmentState
+    from fastapi.testclient import TestClient
+    with TestClient(app) as client:
+        _login(client, slack_user_id="U_DEMO", slack_team_id="T_DEMO")
+        payload = client.get("/export/json").json()
+        target = payload[0]["id"]
+
+        # 1. Purging an ACTIVE commitment must be rejected — the bin's
+        #    "are you sure?" moment is intentional, not a guard to skip.
+        r = client.post(f"/commitments/{target}/purge")
+        assert r.status_code == 400, r.status_code
+
+        # 2. Soft-delete first, then purge succeeds.
+        r = client.post(f"/commitments/{target}/delete")
+        assert r.status_code == 200
+
+        db = SessionLocal()
+        try:
+            row = db.get(Commitment, target)
+            assert row is not None
+            assert row.state == CommitmentState.DELETED
+        finally:
+            db.close()
+
+        r = client.post(f"/commitments/{target}/purge")
+        assert r.status_code == 200, r.text
+
+        # 3. Row is gone from the database.
+        db = SessionLocal()
+        try:
+            assert db.get(Commitment, target) is None
+        finally:
+            db.close()
+
+    print("purge ok")
+
+
 def test_authorization_blocks_cross_user_mutation():
     """A second user can't mark the first user's commitment done."""
     _bootstrap_env()

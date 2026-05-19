@@ -347,6 +347,22 @@ def soft_delete(db: Session, c: Commitment, *, source: EditSource) -> Commitment
     return c
 
 
+def hard_delete(db: Session, c: Commitment) -> None:
+    """Permanently remove a commitment row from the database.
+
+    Reserved for two intentional callers:
+      1. The 48h bin sweep in `scheduler.py:purge_bin`.
+      2. The manual 'Purge' button on the dashboard's Deleted tab —
+         user wants the row gone immediately, no waiting.
+
+    No audit log entry is written, because the row (and its
+    `CommitmentEdit` history via FK cascade) is about to vanish anyway.
+    Callers should log the action at the application level if they want
+    a trail.
+    """
+    db.delete(c)
+
+
 def restore_from_bin(db: Session, c: Commitment, *, source: EditSource) -> Commitment:
     if c.state != CommitmentState.DELETED:
         return c

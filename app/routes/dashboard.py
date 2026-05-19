@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from datetime import datetime, time, timezone
 from pathlib import Path
 from typing import Optional
@@ -55,6 +56,7 @@ from app.tz import (
     validate_zone,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
@@ -727,6 +729,32 @@ def action_restore(
 ):
     c = _get_owned_commitment(db, cid=cid, user=user)
     commit_svc.restore_from_bin(db, c, source=EditSource.DASHBOARD)
+    db.flush()
+    return HTMLResponse(_count_oob_html(db, user))
+
+
+@router.post("/commitments/{cid}/purge")
+def action_purge(
+    cid: str,
+    user: User = Depends(required_user_committing),
+    db: Session = Depends(committing_db),
+):
+    """Hard-delete a commitment immediately, bypassing the 48h bin wait.
+
+    Only valid from the DELETED state — there's no path to "purge an
+    active commitment" without going through soft-delete first, since
+    we want users to opt into the 'are you sure?' moment that the bin
+    represents.
+    """
+    c = _get_owned_commitment(db, cid=cid, user=user)
+    if c.state != CommitmentState.DELETED:
+        raise HTTPException(
+            400, "Only commitments in the bin can be purged."
+        )
+    log.info(
+        "Manual purge of commitment %s by user %s", c.id, user.slack_user_id,
+    )
+    commit_svc.hard_delete(db, c)
     db.flush()
     return HTMLResponse(_count_oob_html(db, user))
 
