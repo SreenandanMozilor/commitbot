@@ -464,6 +464,27 @@ def dashboard_home(
         ).scalars().all():
             current_owner_names[u.id] = u.display_name or u.slack_user_id
 
+    # State pill in the handed-off view. The actual DB state column is
+    # owner-perspective ("REASSIGNED" = "I was handed this"), which reads
+    # confusingly from the sender side once a chain forms — Alice → Rhea
+    # → Amal would show 'reassigned' even though Amal is actively
+    # working on it. Translate to sender-perspective labels: ACTIVE and
+    # REASSIGNED both collapse to "Active" because they're functionally
+    # identical from someone watching from the outside.
+    handed_off_state_label: dict[str, str] = {}
+    if is_handed_off_view and rows:
+        _LABELS = {
+            CommitmentState.ACTIVE.value: "Active",
+            CommitmentState.REASSIGNED.value: "Active",
+            CommitmentState.ON_HOLD.value: "On hold",
+            CommitmentState.COMPLETE.value: "Completed",
+            CommitmentState.ARCHIVED.value: "Archived",
+        }
+        for c in rows:
+            handed_off_state_label[c.id] = _LABELS.get(
+                c.state.value, c.state.value.replace("_", " ").title(),
+            )
+
     now = datetime.now(timezone.utc)
     user_zone = safe_zone(user.tz)
     urgency = {}
@@ -526,6 +547,7 @@ def dashboard_home(
             "recipient_names": recipient_names,
             "is_handed_off_view": is_handed_off_view,
             "current_owner_names": current_owner_names,
+            "handed_off_state_label": handed_off_state_label,
         },
     )
 

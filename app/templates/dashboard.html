@@ -155,8 +155,9 @@
             <span class="pill recipients" title="Who's working on it now">
               → now with @{{ current_owner_names.get(c.user_id, c.user_id) }}
             </span>
-            <span class="pill" style="color: var(--ink-muted); background: var(--bg-tinted); text-transform: capitalize;">
-              {{ c.state.value.replace('_', ' ') }}
+            <span class="pill" style="color: var(--ink-muted); background: var(--bg-tinted);"
+                  title="State from your perspective — translates the literal DB state for clarity">
+              {{ handed_off_state_label.get(c.id, c.state.value) }}
             </span>
           {% endif %}
 
