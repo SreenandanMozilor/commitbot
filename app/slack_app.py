@@ -791,6 +791,21 @@ def _build_home_view(db, owner: User) -> dict:
                                     "text": "Your active commitments",
                                     "emoji": True}})
         blocks.extend(_home_active_blocks(db, owner, active))
+
+    # "Clear bot DMs" — destructive utility at the very bottom. Slack
+    # doesn't let third-party apps put UI into the Messages tab, so the
+    # cleanest place for a bulk-delete affordance is the bottom of the
+    # Home tab. Style danger so it's visually distinct.
+    blocks.append({"type": "divider"})
+    blocks.append({"type": "context", "elements": [{"type": "mrkdwn",
+        "text": "_Cleaning up old pings and notifications from your DMs._"}]})
+    blocks.append({"type": "actions", "elements": [{
+        "type": "button",
+        "action_id": "clearmsgs",
+        "text": {"type": "plain_text", "text": "Clear all CommitBot DMs",
+                 "emoji": True},
+        "style": "danger",
+    }]})
     return {"type": "home", "blocks": blocks}
 
 
@@ -1647,6 +1662,102 @@ def handle_cancel_reassignment(ack, action, body, client):
 
 
 # --- Helpers used by the scheduler when reassignments expire --------------
+
+# --- Clear all bot DMs (utility from App Home) ----------------------------
+
+@bolt_app.action("clearmsgs")
+def handle_clearmsgs_request(ack, body, client):
+    """User hit the "Clear all CommitBot DMs" button on their Home tab.
+    Open a modal asking them to confirm before we wipe their DM history."""
+    ack()
+    trigger_id = body.get("trigger_id")
+    if not trigger_id:
+        return
+    modal = {
+        "type": "modal",
+        "callback_id": "clearmsgs_modal",
+        "title": {"type": "plain_text", "text": "Clear all messages?"},
+        "submit": {"type": "plain_text", "text": "Yes, clear them"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn",
+                "text": ("*This permanently deletes every message CommitBot "
+                         "has sent you in this DM.* The chat history is gone "
+                         "for good — buttons, pings, reassignment requests, "
+                         "everything.")}},
+            {"type": "context", "elements": [{"type": "mrkdwn",
+                "text": ("Your commitments, deadlines, and future pings "
+                         "continue normally — only the past chat history is "
+                         "removed.")}]},
+        ],
+    }
+    try:
+        client.views_open(trigger_id=trigger_id, view=modal)
+    except Exception:
+        log.exception("clearmsgs modal failed")
+
+
+@bolt_app.view("clearmsgs_modal")
+def handle_clearmsgs_confirm(ack, body, client):
+    """The user confirmed — page through their DM history and delete every
+    message we sent. Slack only lets us delete messages our own app posted,
+    so user-typed messages (if any) are left alone."""
+    ack()
+    user_id = (body.get("user") or {}).get("id")
+    team_id = (body.get("team") or {}).get("id") or body.get("team_id")
+    if not user_id:
+        return
+
+    # Open the IM channel with this user. conversations.open is idempotent —
+    # if a DM already exists we just get its channel id back.
+    try:
+        im = client.conversations_open(users=user_id)
+        channel = (im or {}).get("channel", {}).get("id")
+        if not channel:
+            log.warning("conversations.open returned no channel for %s", user_id)
+            return
+    except Exception:
+        log.exception("conversations.open failed in clearmsgs")
+        return
+
+    deleted = 0
+    failed = 0
+    cursor: Optional[str] = None
+    while True:
+        try:
+            hist = client.conversations_history(
+                channel=channel, limit=200, cursor=cursor,
+            )
+        except Exception:
+            log.exception("conversations.history failed in clearmsgs")
+            break
+        for msg in hist.get("messages", []):
+            # Only our bot's messages. User-typed messages can't be deleted
+            # by us (no permission), and we wouldn't want to anyway.
+            is_bot = msg.get("bot_id") or msg.get("subtype") == "bot_message"
+            if not is_bot:
+                continue
+            try:
+                client.chat_delete(channel=channel, ts=msg["ts"])
+                deleted += 1
+            except Exception:
+                # Rate-limit or already-deleted; keep going.
+                failed += 1
+        cursor = (hist.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+
+    log.info(
+        "clearmsgs: user=%s deleted=%d failed=%d", user_id, deleted, failed,
+    )
+    # Refresh the Home view so the "Clear all" button stays (and any
+    # other state is up to date).
+    if team_id:
+        try:
+            _refresh_home(client, team_id=team_id, slack_user_id=user_id)
+        except Exception:
+            log.exception("home refresh after clearmsgs failed")
+
 
 def retire_reassignment_dm(
     client: Any, *, channel: Optional[str], ts: Optional[str], final_text: str,
