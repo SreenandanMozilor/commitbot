@@ -504,7 +504,6 @@ def handle_message_shortcut(ack, shortcut, client):
     team_id = shortcut["team"]["id"]
     invoking_user = shortcut["user"]["id"]
     message = shortcut["message"]
-    msg_user = message.get("user")
     channel_id = shortcut["channel"]["id"]
     ts = message["ts"]
     text = message.get("text", "")
@@ -523,12 +522,15 @@ def handle_message_shortcut(ack, shortcut, client):
     with session_scope() as db:
         owner = _get_or_provision_user(db, slack_team_id=team_id, slack_user_id=invoking_user)
 
-        # Own message → outbound (recipients = anyone @-mentioned in the message).
-        # Someone else's message → owed-to-me (recipient = the message author).
-        if msg_user == invoking_user:
-            recipients = _extract_mentions(text)
-        else:
-            recipients = [msg_user] if msg_user else []
+        # Recipients are always extracted from @-mentions in the message
+        # text — same rule whether the message was yours or someone else's.
+        # (An earlier design implicitly added the message author as
+        # recipient when right-clicking someone else's message. That was
+        # semantically misleading: the commitment was still owned by you,
+        # and the recipient pill rendered as "→ @them", which read as if
+        # you owed them. To track "they owe me X", capture the commitment
+        # first and then reassign it to them via the reassignment flow.)
+        recipients = _extract_mentions(text)
 
         try:
             c = commit_svc.create_commitment(
