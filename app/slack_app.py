@@ -609,12 +609,12 @@ def _home_active_blocks(db, owner: User, active: list[Commitment]) -> list[dict]
              "text": {"type": "plain_text",
                       "text": "Edit deadline" if c.deadline else "Set deadline",
                       "emoji": True}},
+            # Hold — indefinite pause. Replaces the old "Clear" (deadline)
+            # button, which was confusingly named (sounded like delete) and
+            # the rare case for deadline removal is handled on the dashboard.
+            {"type": "button", "action_id": f"hold::{c.id}",
+             "text": {"type": "plain_text", "text": "Hold", "emoji": True}},
         ]
-        if c.deadline:
-            action_elements.append({
-                "type": "button", "action_id": f"cleardeadline::{c.id}",
-                "text": {"type": "plain_text", "text": "Clear", "emoji": True},
-            })
         if c.deadline:
             if not c.escalation_enabled:
                 action_elements.append({
