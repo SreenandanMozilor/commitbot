@@ -612,6 +612,72 @@ class TestAutoResumeBeforeDeadline:
         assert c.state == CommitmentState.REASSIGNED
 
 
+class TestAutoResumeBeforeDeadline:
+    """The deadline-driven auto-resume trigger — per-user setting that
+    pulls held commitments back into ACTIVE when their deadline is close,
+    so a snoozed-and-forgotten commitment doesn't quietly miss its date."""
+
+    def _setup(self, env, *, hours_before, deadline_offset_hours):
+        from app.models import (
+            CaptureSource, Commitment, CommitmentState,
+        )
+        db = env["db"]
+        env["user"].auto_resume_hours_before_deadline = hours_before
+        db.commit()
+        deadline = datetime.now(timezone.utc) + timedelta(hours=deadline_offset_hours)
+        c = Commitment(
+            user_id=env["user"].id,
+            workspace_id=env["user"].workspace_id,
+            text="x", source=CaptureSource.SLASH_COMMAND,
+            priority_level_id=env["pri"].id,
+            deadline=deadline,
+            state=CommitmentState.ON_HOLD,
+            prior_state=CommitmentState.ACTIVE,
+        )
+        db.add(c); db.commit()
+        return c
+
+    def test_deadline_within_window_triggers_resume(self, env):
+        """Setting = 24h, deadline = 12h from now → wakes back up."""
+        from app.models import CommitmentState
+        c = self._setup(env, hours_before=24, deadline_offset_hours=12)
+        from app.scheduler import auto_resume_on_hold
+        auto_resume_on_hold()
+        env["db"].refresh(c)
+        assert c.state == CommitmentState.ACTIVE
+        assert c.prior_state is None
+
+    def test_deadline_outside_window_does_not_resume(self, env):
+        """Setting = 24h, deadline = 48h from now → stays on hold."""
+        from app.models import CommitmentState
+        c = self._setup(env, hours_before=24, deadline_offset_hours=48)
+        from app.scheduler import auto_resume_on_hold
+        auto_resume_on_hold()
+        env["db"].refresh(c)
+        assert c.state == CommitmentState.ON_HOLD
+
+    def test_setting_of_zero_disables_the_rule(self, env):
+        """Setting = 0, deadline = 1h from now → no auto-resume."""
+        from app.models import CommitmentState
+        c = self._setup(env, hours_before=0, deadline_offset_hours=1)
+        from app.scheduler import auto_resume_on_hold
+        auto_resume_on_hold()
+        env["db"].refresh(c)
+        assert c.state == CommitmentState.ON_HOLD
+
+    def test_prior_state_restored_on_deadline_resume(self, env):
+        """A REASSIGNED commitment that was snoozed → resumes as
+        REASSIGNED, not ACTIVE."""
+        from app.models import CommitmentState
+        c = self._setup(env, hours_before=24, deadline_offset_hours=6)
+        c.prior_state = CommitmentState.REASSIGNED
+        env["db"].commit()
+        from app.scheduler import auto_resume_on_hold
+        auto_resume_on_hold()
+        env["db"].refresh(c)
+        assert c.state == CommitmentState.REASSIGNED
+
+
 class TestFormatInterval:
     @pytest.mark.parametrize("minutes,expected", [
         (None, "—"),

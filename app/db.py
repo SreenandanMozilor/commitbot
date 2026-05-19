@@ -74,6 +74,11 @@ def _apply_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE users ADD COLUMN signed_in_at DATETIME"))
         if "auto_resume_hours_before_deadline" not in cols:
             conn.execute(text(
+                "ALTER TABLE users ADD COLUMN auto_resume_hours_before_deadline "
+                "INTEGER NOT NULL DEFAULT 24"
+            ))
+        if "auto_resume_hours_before_deadline" not in cols:
+            conn.execute(text(
                 "ALTER TABLE users ADD COLUMN "
                 "auto_resume_hours_before_deadline INTEGER NOT NULL DEFAULT 24"
             ))

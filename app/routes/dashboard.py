@@ -184,6 +184,29 @@ def _state_counts(db: Session, user: User) -> dict[str, int]:
         key = st.value if hasattr(st, "value") else st
         if key in counts:
             counts[key] = n
+
+    # Re-interpret two tabs to match user-facing semantics:
+    #
+    #   "active"     = commitments I'm currently doing.
+    #                  Includes both ACTIVE (originated by me) and REASSIGNED
+    #                  (handed to me, I accepted). A REASSIGNED commitment is
+    #                  functionally my work — the label is just a breadcrumb.
+    #
+    #   "reassigned" = commitments I HANDED OFF (the perspective the user
+    #                  asked for). Found via ACCEPTED Reassignment rows
+    #                  where I'm the from_user — works for arbitrarily long
+    #                  chains because each hop writes its own row.
+    counts["active"] = counts.get("active", 0) + counts.pop("reassigned", 0)
+    counts["reassigned"] = db.execute(
+        select(func.count(func.distinct(Commitment.id)))
+        .join(Reassignment, Reassignment.commitment_id == Commitment.id)
+        .where(
+            Reassignment.from_user_id == user.id,
+            Reassignment.status == ReassignmentStatus.ACCEPTED,
+            Commitment.user_id != user.id,
+            Commitment.state != CommitmentState.DELETED,
+        )
+    ).scalar() or 0
     return counts
 
 
@@ -251,14 +274,46 @@ def dashboard_home(
         except ValueError:
             state_enum = CommitmentState.ACTIVE
 
+    # Special "handed-off" view: commitments the user reassigned away and
+    # someone accepted. Found via the Reassignment audit table — works for
+    # chained reassignments (each hop is a separate row) and survives
+    # state changes on the commitment (Bob might have already completed it).
+    is_handed_off_view = (state == "reassigned")
+
     base_q = select(Commitment).where(Commitment.user_id == user.id)
     if outcome_filter is not None:
         rows_q = base_q.where(Commitment.outcome == outcome_filter)
+        rows = db.execute(
+            rows_q.order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
+        ).scalars().all()
+    elif is_handed_off_view:
+        rows = db.execute(
+            select(Commitment)
+            .join(Reassignment, Reassignment.commitment_id == Commitment.id)
+            .where(
+                Reassignment.from_user_id == user.id,
+                Reassignment.status == ReassignmentStatus.ACCEPTED,
+                Commitment.user_id != user.id,
+                Commitment.state != CommitmentState.DELETED,
+            )
+            .distinct()
+            .order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
+        ).scalars().all()
+    elif state_enum == CommitmentState.ACTIVE:
+        # "Active" tab includes REASSIGNED commitments I own — those are
+        # things handed TO me that I'm working on. Treating them as live.
+        rows = db.execute(
+            base_q.where(
+                Commitment.state.in_(
+                    [CommitmentState.ACTIVE, CommitmentState.REASSIGNED]
+                )
+            ).order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
+        ).scalars().all()
     else:
-        rows_q = base_q.where(Commitment.state == state_enum)
-    rows = db.execute(
-        rows_q.order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
-    ).scalars().all()
+        rows = db.execute(
+            base_q.where(Commitment.state == state_enum)
+            .order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
+        ).scalars().all()
 
     priorities = db.execute(
         select(PriorityLevel)
@@ -398,6 +453,17 @@ def dashboard_home(
             if u.display_name:
                 recipient_names[u.slack_user_id] = u.display_name
 
+    # For the handed-off view (Reassigned tab from sender perspective),
+    # resolve who currently owns each row so we can render "→ now with @bob"
+    # instead of "→ now with U0B…".
+    current_owner_names: dict[str, str] = {}
+    if is_handed_off_view and rows:
+        owner_user_ids = {c.user_id for c in rows}
+        for u in db.execute(
+            select(User).where(User.id.in_(owner_user_ids))
+        ).scalars().all():
+            current_owner_names[u.id] = u.display_name or u.slack_user_id
+
     now = datetime.now(timezone.utc)
     user_zone = safe_zone(user.tz)
     urgency = {}
@@ -411,7 +477,13 @@ def dashboard_home(
         if local_dl is not None:
             deadlines_local[c.id] = local_dl.strftime("%a %b %d, %H:%M %Z")
             deadline_inputs[c.id] = local_dl.strftime("%Y-%m-%dT%H:%M")
-        if c.state in (CommitmentState.ACTIVE, CommitmentState.REASSIGNED):
+        # Cadence only makes sense for live commitments I OWN — for handed-off
+        # rows the new owner has their own cadence (we don't know it from
+        # here, and showing 'no pings' would mislead the user).
+        if (
+            c.user_id == user.id
+            and c.state in (CommitmentState.ACTIVE, CommitmentState.REASSIGNED)
+        ):
             level = levels_by_id.get(c.priority_level_id) if c.priority_level_id else None
             if user.global_pause:
                 cadences[c.id] = "paused"
@@ -452,6 +524,8 @@ def dashboard_home(
             "outgoing_by_commitment": outgoing_by_commitment,
             "teammates": teammates,
             "recipient_names": recipient_names,
+            "is_handed_off_view": is_handed_off_view,
+            "current_owner_names": current_owner_names,
         },
     )
 

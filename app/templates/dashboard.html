@@ -139,15 +139,24 @@
             </span>
           {% endif %}
 
-          {% if c.state.value == 'active' and cadences.get(c.id) %}
+          {% if cadences.get(c.id) %}
             <span class="pill" title="How often you'll be pinged at the moment">
               🔔 {{ cadences[c.id] }}
             </span>
           {% endif %}
 
-          {% if not c.escalation_enabled and c.state.value == 'active' %}
+          {% if not c.escalation_enabled and c.state.value in ('active', 'reassigned') and not is_handed_off_view %}
             <span class="pill" style="color: var(--warning); background: var(--warning-soft);">
               Escalation off
+            </span>
+          {% endif %}
+
+          {% if is_handed_off_view %}
+            <span class="pill recipients" title="Who's working on it now">
+              → now with @{{ current_owner_names.get(c.user_id, c.user_id) }}
+            </span>
+            <span class="pill" style="color: var(--ink-muted); background: var(--bg-tinted); text-transform: capitalize;">
+              {{ c.state.value.replace('_', ' ') }}
             </span>
           {% endif %}
 
@@ -156,7 +165,7 @@
           </span>
         </div>
 
-        {% if c.state.value in ('active', 'on_hold', 'reassigned') %}
+        {% if c.state.value in ('active', 'on_hold', 'reassigned') and not is_handed_off_view %}
         <details class="edit-panel">
           <summary>
             Edit details
@@ -196,7 +205,7 @@
         </details>
         {% endif %}
 
-        {% if c.state.value in ('active', 'reassigned') and teammates %}
+        {% if c.state.value in ('active', 'reassigned') and teammates and not is_handed_off_view %}
         <details class="reassign-panel">
           <summary>Reassign to a teammate</summary>
           <form method="post" action="/commitments/{{ c.id }}/reassign">
@@ -252,7 +261,9 @@
 
       <div class="actions">
         {% set row_state = c.state.value %}
-        {% if row_state in ('active', 'reassigned') %}
+        {% if is_handed_off_view %}
+          {# Read-only view of someone else's commitment — no actions. #}
+        {% elif row_state in ('active', 'reassigned') %}
           <button class="success small"
                   hx-post="/commitments/{{ c.id }}/done"
 
@@ -347,9 +358,10 @@
          until you resume it. Reassignment requests awaiting a response also
          live here.</p>
     {% elif active_state == 'reassigned' %}
-      <p>Commitments handed to you by teammates (and you've accepted) show
-         up here. They behave just like active commitments — you'll get
-         pings, can mark them done, edit them, or pass them on again.</p>
+      <p>Commitments you've handed off to teammates (and they've accepted)
+         show up here. They're read-only from your side — you can see who
+         owns them now and their current state, but the new owner is the
+         one taking action.</p>
     {% elif active_state == 'success' %}
       <p>Commitments you completed on time end up here. Finish something
          before its deadline to add to the pile.</p>

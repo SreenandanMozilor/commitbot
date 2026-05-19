@@ -194,7 +194,106 @@ def test_authorization_blocks_cross_user_mutation():
     print("authz ok")
 
 
+def test_reassignment_visible_to_sender_after_accept():
+    """End-to-end check of the visibility rework: after Bob accepts, the
+    commitment must appear in Alice's `Reassigned` tab (read-only) AND in
+    Bob's `Active` tab. Mirrors the exact flow the user hit at demo time
+    where their dashboard went blank post-accept."""
+    _bootstrap_env()
+    for mod_name in list(sys.modules):
+        if mod_name == "app" or mod_name.startswith("app."):
+            del sys.modules[mod_name]
+
+    from datetime import datetime, timezone
+    from app.db import Base, engine, SessionLocal
+    from app import models  # noqa: F401
+    Base.metadata.create_all(engine)
+
+    # Set up: one workspace, Alice + Bob, both onboarded.
+    from app.models import (
+        CaptureSource, Commitment, CommitmentState, EditSource,
+        PriorityLevel, User, Workspace,
+    )
+    from app.services import reassignments as reassign_svc
+    db = SessionLocal()
+    try:
+        ws = Workspace(slack_team_id="T_DEMO", bot_token="xoxb-demo")
+        db.add(ws); db.flush()
+        now = datetime.now(timezone.utc)
+        alice = User(
+            workspace_id=ws.id, slack_user_id="U_ALICE",
+            display_name="Alice", signed_in_at=now,
+        )
+        bob = User(
+            workspace_id=ws.id, slack_user_id="U_BOB",
+            display_name="Bob", signed_in_at=now,
+        )
+        db.add_all([alice, bob]); db.flush()
+        for u in (alice, bob):
+            db.add(PriorityLevel(
+                user_id=u.id, name="Normal",
+                base_ping_interval_minutes=240,
+                escalation_trigger_hours_before_deadline=24,
+                max_ping_frequency_minutes=30, escalation_rate=2.0,
+                is_system_default=True,
+            ))
+        db.flush()
+        # Alice creates a commitment.
+        c = Commitment(
+            user_id=alice.id, workspace_id=ws.id,
+            text="send the spec to priya",
+            source=CaptureSource.SLASH_COMMAND,
+            state=CommitmentState.ACTIVE,
+        )
+        db.add(c); db.flush()
+        # Alice reassigns to Bob, Bob accepts. Service-level, like the
+        # real Slack/Dashboard flow would do.
+        r = reassign_svc.request_reassignment(
+            db, commitment=c, target_slack_user_id="U_BOB",
+            source=EditSource.SLACK,
+        )
+        db.commit()
+        reassign_svc.accept_reassignment(
+            db, reassignment=r, actor=bob, source=EditSource.SLACK,
+        )
+        db.commit()
+        # Sanity: commitment is now REASSIGNED under Bob.
+        db.refresh(c)
+        assert c.user_id == bob.id
+        assert c.state == CommitmentState.REASSIGNED
+    finally:
+        db.close()
+
+    from app.main import app
+    from fastapi.testclient import TestClient
+    with TestClient(app) as client:
+        # As Alice — Reassigned tab should show the handed-off commitment.
+        _login(client, slack_user_id="U_ALICE", slack_team_id="T_DEMO")
+        r = client.get("/?state=reassigned")
+        assert r.status_code == 200
+        assert "send the spec to priya" in r.text, \
+            "Alice should see her handed-off commitment in Reassigned tab"
+        # And it should show who owns it now.
+        assert "now with @Bob" in r.text or "now with Bob" in r.text, \
+            "Should label the new owner"
+
+        # And Alice's Active tab should NOT show it (Bob owns it now).
+        r = client.get("/?state=active")
+        assert "send the spec to priya" not in r.text, \
+            "Handed-off commitment should not appear in Alice's Active tab"
+
+        # As Bob — Active tab should show the accepted commitment.
+        _login(client, slack_user_id="U_BOB", slack_team_id="T_DEMO")
+        r = client.get("/?state=active")
+        assert r.status_code == 200
+        assert "send the spec to priya" in r.text, \
+            "Bob should see the accepted commitment in his Active tab"
+
+    print("sender-visibility ok")
+
+
 if __name__ == "__main__":
     test_smoke()
     test_demo_seed_round_trip()
     test_authorization_blocks_cross_user_mutation()
+    test_reassignment_visible_to_sender_after_accept()

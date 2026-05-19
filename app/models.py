@@ -147,6 +147,13 @@ class User(Base):
     reaction_signal_enabled: Mapped[bool] = mapped_column(Boolean, default=False)   # F10 default OFF
     threaded_confirm_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     tz: Mapped[str] = mapped_column(String(64), default="UTC")
+    # When non-zero, an ON_HOLD commitment auto-resumes when its deadline
+    # is within this many hours. Default 24h. Set to 0 to disable, in which
+    # case held commitments only wake up via explicit Resume (or their own
+    # on_hold_resume_at if a snooze set one).
+    auto_resume_hours_before_deadline: Mapped[int] = mapped_column(
+        Integer, default=24,
+    )
 
     # Set the first time the user completes Sign-in-with-Slack on the
     # dashboard. NULL means they were auto-provisioned by a bot interaction
