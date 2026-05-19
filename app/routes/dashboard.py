@@ -204,7 +204,6 @@ def _state_counts(db: Session, user: User) -> dict[str, int]:
             Reassignment.from_user_id == user.id,
             Reassignment.status == ReassignmentStatus.ACCEPTED,
             Commitment.user_id != user.id,
-            Commitment.state != CommitmentState.DELETED,
         )
     ).scalar() or 0
     return counts
@@ -287,6 +286,10 @@ def dashboard_home(
             rows_q.order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
         ).scalars().all()
     elif is_handed_off_view:
+        # Include DELETED here — if the new owner trashed your handed-off
+        # commitment, you should at least see it sitting in the 48h bin so
+        # you can react. After the bin purges the row, the join no longer
+        # finds anything and it drops out naturally.
         rows = db.execute(
             select(Commitment)
             .join(Reassignment, Reassignment.commitment_id == Commitment.id)
@@ -294,7 +297,6 @@ def dashboard_home(
                 Reassignment.from_user_id == user.id,
                 Reassignment.status == ReassignmentStatus.ACCEPTED,
                 Commitment.user_id != user.id,
-                Commitment.state != CommitmentState.DELETED,
             )
             .distinct()
             .order_by(Commitment.deadline.is_(None), Commitment.deadline.asc())
@@ -479,6 +481,7 @@ def dashboard_home(
             CommitmentState.ON_HOLD.value: "On hold",
             CommitmentState.COMPLETE.value: "Completed",
             CommitmentState.ARCHIVED.value: "Archived",
+            CommitmentState.DELETED.value: "Deleted",
         }
         for c in rows:
             handed_off_state_label[c.id] = _LABELS.get(

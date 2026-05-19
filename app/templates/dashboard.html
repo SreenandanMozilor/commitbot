@@ -152,7 +152,12 @@
           {% endif %}
 
           {% if is_handed_off_view %}
-            <span class="pill recipients" title="Who's working on it now">
+            {# Amber rather than the blue 'recipients' pill — visually
+               distinguishes 'someone else owns this' from your own
+               recipients (where blue means 'you owe these people'). #}
+            <span class="pill"
+                  style="color: var(--warning); background: var(--warning-soft); font-weight: 500;"
+                  title="Who's working on it now">
               → now with @{{ current_owner_names.get(c.user_id, c.user_id) }}
             </span>
             <span class="pill" style="color: var(--ink-muted); background: var(--bg-tinted);"
