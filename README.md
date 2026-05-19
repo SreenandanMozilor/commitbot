@@ -1,6 +1,6 @@
 # CommitBot
 
-> *"I said I'd do it but I forgot."*
+> *"I said I'd do that and forgot."*
 
 CommitBot is a Slack bot + web dashboard that catches the small promises
 you make in chat — *"I'll send the report by Friday"*, *"I'll review
