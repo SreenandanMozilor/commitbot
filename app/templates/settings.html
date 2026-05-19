@@ -50,7 +50,12 @@
 
       <hr class="divider" style="margin: 20px 0;">
 
-      <div class="form-grid">
+      {# Forced two-column layout. The default `.form-grid` auto-fits
+         columns, which packs four fields into one cramped row on wide
+         screens; the hints below each field vary a lot in length and
+         the visual rhythm breaks. Two columns keeps inputs at a
+         comfortable width and pairs related fields together. #}
+      <div class="form-grid" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
         <div>
           <label for="pref-days">Auto-delete completed after</label>
           <input id="pref-days" type="number" min="0" max="3650"
@@ -64,12 +69,6 @@
           </p>
         </div>
         <div>
-          <label for="pref-sod">Start of day</label>
-          <input id="pref-sod" type="time" name="start_of_day"
-                 value="{{ user.start_of_day.strftime('%H:%M') }}">
-          <p class="hint">"Snooze to tomorrow" resumes at this time (in your timezone).</p>
-        </div>
-        <div>
           <label for="pref-auto-resume">Auto-resume held commitments</label>
           <input id="pref-auto-resume" type="number" min="0" max="720"
                  name="auto_resume_hours_before_deadline"
@@ -81,13 +80,24 @@
           </p>
         </div>
         <div>
+          <label for="pref-sod">Start of day</label>
+          <input id="pref-sod" type="time" name="start_of_day"
+                 value="{{ user.start_of_day.strftime('%H:%M') }}">
+          <p class="hint">
+            "Snooze to tomorrow" resumes at this time (in your timezone).
+          </p>
+        </div>
+        <div>
           <label for="pref-tz">Timezone</label>
           <input id="pref-tz" type="text" name="tz" list="tz-list"
                  value="{{ user.tz }}" placeholder="Asia/Kolkata">
           <datalist id="tz-list">
             {% for z in tz_options %}<option value="{{ z }}"></option>{% endfor %}
           </datalist>
-          <p class="hint">IANA name (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>). Deadlines are shown and entered in this zone.</p>
+          <p class="hint">
+            IANA name (e.g. <code>Asia/Kolkata</code>, <code>America/New_York</code>).
+            Deadlines are shown and entered in this zone.
+          </p>
         </div>
       </div>
 
