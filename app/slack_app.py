@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from datetime import datetime, timedelta, timezone
 from time import time as _time
 from typing import Any, Optional
@@ -1699,17 +1700,30 @@ def handle_clearmsgs_request(ack, body, client):
 
 @bolt_app.view("clearmsgs_modal")
 def handle_clearmsgs_confirm(ack, body, client):
-    """The user confirmed — page through their DM history and delete every
-    message we sent. Slack only lets us delete messages our own app posted,
-    so user-typed messages (if any) are left alone."""
+    """The user confirmed — close the modal IMMEDIATELY and do the slow
+    bulk-delete in a background thread. Slack requires view submissions
+    to ack within 3 seconds; chat.delete is rate-limited to ~50/minute,
+    so any non-trivial cleanup would otherwise time out and the user
+    would see Slack's "We had some trouble connecting" error.
+    """
     ack()
     user_id = (body.get("user") or {}).get("id")
     team_id = (body.get("team") or {}).get("id") or body.get("team_id")
     if not user_id:
         return
+    # Fire-and-forget. Daemon=True so the thread doesn't keep the process
+    # alive if the server is shutting down.
+    threading.Thread(
+        target=_clearmsgs_worker,
+        args=(client, user_id, team_id),
+        daemon=True,
+        name=f"clearmsgs-{user_id}",
+    ).start()
 
-    # Open the IM channel with this user. conversations.open is idempotent —
-    # if a DM already exists we just get its channel id back.
+
+def _clearmsgs_worker(client: Any, user_id: str, team_id: Optional[str]) -> None:
+    """Background worker — opens the IM, pages through history, deletes
+    every bot-posted message, refreshes the Home view at the end."""
     try:
         im = client.conversations_open(users=user_id)
         channel = (im or {}).get("channel", {}).get("id")
@@ -1750,8 +1764,6 @@ def handle_clearmsgs_confirm(ack, body, client):
     log.info(
         "clearmsgs: user=%s deleted=%d failed=%d", user_id, deleted, failed,
     )
-    # Refresh the Home view so the "Clear all" button stays (and any
-    # other state is up to date).
     if team_id:
         try:
             _refresh_home(client, team_id=team_id, slack_user_id=user_id)
