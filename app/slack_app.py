@@ -1830,7 +1830,10 @@ def send_ping_dm(
     if not commitment.escalation_enabled:
         meta_bits.append(":pause_button: escalation off")
 
-    actions: list[dict] = [
+    # Two action rows so all the buttons render reliably regardless of
+    # Slack-client width. With 5 buttons in a single row, narrow DM columns
+    # silently truncate or hide some — users see Hold OR Stop, not both.
+    primary_row = [
         {"type": "button", "action_id": f"done::{commitment.id}",
          "text": {"type": "plain_text", "text": "Mark done", "emoji": True},
          "style": "primary"},
@@ -1838,21 +1841,23 @@ def send_ping_dm(
          "text": {"type": "plain_text", "text": "Snooze 2h", "emoji": True}},
         {"type": "button", "action_id": f"snoozetomorrow::{commitment.id}",
          "text": {"type": "plain_text", "text": "Tomorrow", "emoji": True}},
-        # Indefinite hold — no auto-resume timer. User must resume manually
-        # from the dashboard (the deadline-driven auto-resume sweep can still
-        # pick it up if a deadline is close, per per-user settings).
+    ]
+    # Second row groups the longer-term "park / cadence-toggle" controls.
+    # Hold is indefinite (no auto-resume unless the deadline-driven sweep
+    # picks it up). Stop/Resume escalation only show when a deadline exists.
+    cadence_row = [
         {"type": "button", "action_id": f"hold::{commitment.id}",
          "text": {"type": "plain_text", "text": "Hold", "emoji": True}},
     ]
     if commitment.deadline:
         if not commitment.escalation_enabled:
-            actions.append({
+            cadence_row.append({
                 "type": "button", "action_id": f"resumeesc::{commitment.id}",
                 "text": {"type": "plain_text", "text": "Resume escalation",
                          "emoji": True},
             })
         elif not at_floor:
-            actions.append({
+            cadence_row.append({
                 "type": "button", "action_id": f"stopesc::{commitment.id}",
                 "text": {"type": "plain_text", "text": "Stop escalation",
                          "emoji": True},
@@ -1867,6 +1872,7 @@ def send_ping_dm(
             {"type": "context", "elements": [
                 {"type": "mrkdwn", "text": "   ".join(meta_bits)},
             ]},
-            {"type": "actions", "elements": actions},
+            {"type": "actions", "elements": primary_row},
+            {"type": "actions", "elements": cadence_row},
         ],
     )
