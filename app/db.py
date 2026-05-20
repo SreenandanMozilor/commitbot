@@ -123,6 +123,21 @@ def _apply_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE commitments ADD COLUMN outcome VARCHAR(16)"))
         if "prior_state" not in c_cols:
             conn.execute(text("ALTER TABLE commitments ADD COLUMN prior_state VARCHAR(16)"))
+        # Agent provenance — only set for source=AGENT captures, NULL otherwise.
+        if "agent_confidence" not in c_cols:
+            conn.execute(text("ALTER TABLE commitments ADD COLUMN agent_confidence FLOAT"))
+        if "agent_rationale" not in c_cols:
+            conn.execute(text("ALTER TABLE commitments ADD COLUMN agent_rationale TEXT"))
+
+        # Per-user agent settings. Defaults match the model: OFF by default.
+        if "agent_enabled" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN agent_enabled BOOLEAN NOT NULL DEFAULT 0"
+            ))
+        if "agent_confidence_floor_pct" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN agent_confidence_floor_pct INTEGER"
+            ))
         # Self-heal any rows left with a lowercase outcome from an earlier
         # iteration of this migration. SAEnum reads/writes the enum NAME
         # (uppercase), so a stored 'success' triggers a LookupError on read.

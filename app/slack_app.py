@@ -441,6 +441,19 @@ def handle_message_for_notation(event, client, logger):
             # nudge for every message in every channel the bot is in.
             return
 
+        # Agent buffer comes BEFORE the notation match. We want every
+        # message from an opted-in user available for batched
+        # classification, regardless of whether it also matched a notation.
+        # If the same message later gets captured as both NOTATION and
+        # AGENT, the (workspace, channel, ts) dedup constraint inside
+        # `create_commitment` ensures only one row exists.
+        if owner.agent_enabled:
+            from app.services import agent as agent_svc
+            agent_svc.buffer_message(
+                db, user=owner, channel_id=channel_id,
+                message_ts=ts, text=text,
+            )
+
         compiled = _get_compiled_notations(db, owner.id)
         if not compiled:
             return
@@ -739,14 +752,151 @@ def _home_outgoing_reassignment_blocks(
     return out
 
 
+def _home_agent_blocks(db, owner: User) -> list[dict]:
+    """Render the agentic-capture status strip + recent auto-captures.
+
+    Two layers stacked together at the top of Home so users always have a
+    clear answer to "what is the agent doing right now?":
+
+      - A one-line status row: ON/OFF chip, model name, pending buffer
+        count, and a Scan-now button.
+      - A "Recently auto-captured" sub-section when the agent has logged
+        commitments inside the configurable Undo window. Each entry gets
+        an inline Undo button that hard-deletes the row (so a false
+        positive never lands in the user's failed-commitments stats).
+    """
+    from app.services import agent as agent_svc
+    out: list[dict] = []
+
+    pending = agent_svc.pending_buffer_count(db, owner)
+    state_chip = ":robot_face: *Agent: ON*" if owner.agent_enabled else ":zzz: *Agent: off*"
+    cadence = (
+        f"every {settings.agent_scan_interval_minutes}m"
+        if owner.agent_enabled else "paused"
+    )
+    floor_pct = (
+        owner.agent_confidence_floor_pct
+        if owner.agent_confidence_floor_pct is not None
+        else int(round(settings.agent_confidence_floor * 100))
+    )
+    status_bits = [
+        state_chip, f"model: `{settings.agent_model}`",
+        f"scan: {cadence}", f"floor: ≥{floor_pct}%",
+        f"buffered: {pending}",
+    ]
+    if settings.agent_dry_run:
+        status_bits.append(":construction: dry-run")
+    out.append({
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": "   ".join(status_bits)}],
+    })
+
+    toggle_label = "Turn agent off" if owner.agent_enabled else "Turn agent on"
+    action_elements: list[dict] = [
+        {"type": "button", "action_id": "agent_toggle",
+         "text": {"type": "plain_text", "text": toggle_label, "emoji": True},
+         "style": "primary" if not owner.agent_enabled else None},
+    ]
+    if owner.agent_enabled:
+        action_elements.append({
+            "type": "button", "action_id": "agent_scan_now",
+            "text": {"type": "plain_text",
+                     "text": "Scan recent messages", "emoji": True},
+        })
+    # Block Kit refuses a button with style=None — drop the key if unset.
+    action_elements = [
+        {k: v for k, v in e.items() if v is not None} for e in action_elements
+    ]
+    out.append({"type": "actions", "elements": action_elements})
+
+    if not owner.agent_enabled:
+        out.append({"type": "context", "elements": [{
+            "type": "mrkdwn",
+            "text": (
+                "_When on, the agent watches your messages in channels CommitBot "
+                "is in, and logs anything that looks like a personal commitment. "
+                f"Fresh captures show an Undo button here for "
+                f"{settings.agent_undo_window_minutes} minutes._"
+            ),
+        }]})
+        return out
+
+    recent = agent_svc.recent_agent_captures(db, owner=owner)
+    if not recent:
+        return out
+
+    out.append({"type": "divider"})
+    out.append({"type": "header", "text": {
+        "type": "plain_text",
+        "text": f"Recently auto-captured  ({len(recent)})",
+        "emoji": True,
+    }})
+    out.append({"type": "context", "elements": [{
+        "type": "mrkdwn",
+        "text": (
+            f"_The agent flagged these from your messages. "
+            f"Undo within {settings.agent_undo_window_minutes} min if it got one wrong._"
+        ),
+    }]})
+
+    for c in recent[:10]:
+        captured = c.created_at
+        if captured.tzinfo is None:
+            captured = captured.replace(tzinfo=timezone.utc)
+        age_min = max(0, int((datetime.now(timezone.utc) - captured).total_seconds() // 60))
+        age_str = f"{age_min}m ago" if age_min < 60 else f"{age_min // 60}h ago"
+        conf_str = (
+            f"   :bar_chart: {int(round((c.agent_confidence or 0) * 100))}% confident"
+            if c.agent_confidence is not None else ""
+        )
+        meta = f":hourglass: captured {age_str}{conf_str}"
+        out.append({"type": "section", "text": {
+            "type": "mrkdwn", "text": f"*{c.text[:200]}*",
+        }})
+        if c.agent_rationale:
+            out.append({"type": "context", "elements": [{
+                "type": "mrkdwn", "text": f"_{c.agent_rationale[:240]}_",
+            }]})
+        out.append({"type": "context",
+                    "elements": [{"type": "mrkdwn", "text": meta}]})
+        out.append({"type": "actions", "elements": [
+            {"type": "button", "action_id": f"agent_undo::{c.id}",
+             "text": {"type": "plain_text", "text": "Undo (delete)", "emoji": True},
+             "style": "danger",
+             "confirm": {
+                 "title": {"type": "plain_text", "text": "Delete this auto-capture?"},
+                 "text": {"type": "mrkdwn", "text": (
+                     "This permanently removes the agent's capture. It won't "
+                     "appear in your failed-commitments history."
+                 )},
+                 "confirm": {"type": "plain_text", "text": "Delete"},
+                 "deny": {"type": "plain_text", "text": "Keep"},
+             }},
+            {"type": "button", "action_id": f"setdeadline::{c.id}",
+             "text": {"type": "plain_text", "text": "Set deadline", "emoji": True}},
+            {"type": "button", "action_id": f"done::{c.id}",
+             "text": {"type": "plain_text", "text": "Mark done", "emoji": True},
+             "style": "primary"},
+        ]})
+        out.append({"type": "divider"})
+
+    if len(recent) > 10:
+        out.append({"type": "context", "elements": [{
+            "type": "mrkdwn",
+            "text": f"…and {len(recent) - 10} more recent auto-captures.",
+        }]})
+    return out
+
+
 def _build_home_view(db, owner: User) -> dict:
     """Build the App Home Block Kit view for `owner`.
 
     Sections, in order:
       1. Header + "open dashboard" context
-      2. Incoming reassignment requests (Accept/Decline)
-      3. Outgoing pending reassignments (Cancel)
-      4. Active commitments list
+      2. Agent status strip + Recently auto-captured (if any)
+      3. Incoming reassignment requests (Accept/Decline)
+      4. Outgoing pending reassignments (Cancel)
+      5. Active commitments list
     """
     # The Home tab is the user's "what should I do?" view — show both ACTIVE
     # (their own work) and REASSIGNED (work handed to them by teammates).
@@ -775,6 +925,9 @@ def _build_home_view(db, owner: User) -> dict:
         ]},
         {"type": "divider"},
     ]
+
+    blocks.extend(_home_agent_blocks(db, owner))
+    blocks.append({"type": "divider"})
 
     blocks.extend(_home_incoming_reassignment_blocks(db, owner, incoming))
     blocks.extend(_home_outgoing_reassignment_blocks(db, owner, outgoing))
@@ -916,6 +1069,114 @@ def _deny_non_owner(client, body: dict, *, owner_slack_user_id: Optional[str]) -
         client, channel=channel, user=clicker,
         text=f":lock: Only {owner_mention} can act on this commitment.",
     )
+
+
+@bolt_app.action("agent_toggle")
+def handle_agent_toggle(ack, body, client):
+    """Flip the user's `agent_enabled` flag and re-render Home."""
+    ack()
+    team_id = (body.get("team") or {}).get("id") or body.get("team_id")
+    slack_user_id = (body.get("user") or {}).get("id")
+    if not (team_id and slack_user_id):
+        return
+    with session_scope() as db:
+        owner = _find_user(db, slack_team_id=team_id, slack_user_id=slack_user_id)
+        if not _is_onboarded(owner):
+            return
+        owner.agent_enabled = not owner.agent_enabled
+        new_state = owner.agent_enabled
+    log.info(
+        "agent_toggle: user=%s now %s",
+        slack_user_id, "ON" if new_state else "off",
+    )
+    _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
+
+
+@bolt_app.action("agent_scan_now")
+def handle_agent_scan_now(ack, body, client):
+    """Trigger a synchronous scan of the user's buffered messages.
+
+    Runs in a background thread so the Bolt request returns inside Slack's
+    3-second window. The Home tab refreshes when the scan finishes.
+    """
+    ack()
+    team_id = (body.get("team") or {}).get("id") or body.get("team_id")
+    slack_user_id = (body.get("user") or {}).get("id")
+    if not (team_id and slack_user_id):
+        return
+
+    channel = ((body.get("channel") or {}).get("id")
+               or (body.get("container") or {}).get("channel_id"))
+
+    def _do_scan():
+        from app.services import agent as agent_svc
+        from app.services.llm import get_provider
+
+        try:
+            provider = get_provider()
+            with session_scope() as db:
+                owner = _find_user(db, slack_team_id=team_id, slack_user_id=slack_user_id)
+                if not (_is_onboarded(owner) and owner.agent_enabled):
+                    return
+                created = agent_svc.scan_user(db, owner, provider=provider)
+                count = len(created)
+        except Exception:
+            log.exception("agent_scan_now failed for user=%s", slack_user_id)
+            count = 0
+
+        # Ephemeral receipt where the user clicked (Home is in DMs context
+        # already, so the channel id often refers to the user themselves —
+        # postEphemeral falls back to DM via `_safe_ephemeral`).
+        if channel:
+            text = (
+                f":robot_face: Agent scan complete. "
+                f"{count} new commitment{'s' if count != 1 else ''} captured."
+            )
+            try:
+                _safe_ephemeral(client, channel=channel, user=slack_user_id, text=text)
+            except Exception:
+                log.debug("agent scan receipt suppressed", exc_info=True)
+        _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
+
+    threading.Thread(target=_do_scan, daemon=True).start()
+
+
+@bolt_app.action(re.compile(r"^agent_undo::"))
+def handle_agent_undo(ack, action, body, client):
+    """Hard-delete an agent-captured commitment within its Undo window."""
+    ack()
+    commitment_id = action["action_id"].split("::", 1)[1]
+    with session_scope() as db:
+        c = db.get(Commitment, commitment_id)
+        if c is None:
+            return
+        if not _is_commitment_owner(c, body):
+            owner_id = c.user.slack_user_id if c.user else None
+            _deny_non_owner(client, body, owner_slack_user_id=owner_id)
+            return
+        from app.services import agent as agent_svc
+        team_id = c.user.workspace.slack_team_id
+        slack_user_id = c.user.slack_user_id
+        commit_text = c.text
+        removed = agent_svc.undo_agent_capture(db, c)
+
+    if not removed:
+        # Past the Undo window OR not actually an agent capture. Tell the
+        # user and bow out — leave the commitment alone.
+        channel = ((body.get("channel") or {}).get("id")
+                   or (body.get("container") or {}).get("channel_id"))
+        if channel:
+            _safe_ephemeral(
+                client, channel=channel, user=slack_user_id,
+                text=(":warning: Undo window has passed. "
+                      "Soft-delete it from the dashboard instead."),
+            )
+        return
+
+    _update_message_if_possible(
+        client, body, new_text=f":wastebasket: *Undone:* {commit_text}",
+    )
+    _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
 
 
 @bolt_app.action(re.compile(r"^done::"))

@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     # `localhost` works; flip on when serving over ngrok / production HTTPS.
     secure_cookies: bool = False
 
+    # --- Agentic commitment capture ---
+    # See .env.example for the contract. Sensible defaults so unconfigured
+    # installs fall back to the deterministic stub classifier and never
+    # write to a real LLM API by accident.
+    agent_provider: str = "anthropic"
+    anthropic_api_key: str = ""
+    agent_model: str = "claude-haiku-4-5-20251001"
+    agent_dry_run: bool = True
+    agent_scan_interval_minutes: int = 30
+    agent_confidence_floor: float = 0.75
+    agent_undo_window_minutes: int = 60
+    agent_buffer_retention_days: int = 7
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -1,7 +1,7 @@
 """
 Background scheduler.
 
-Five recurring jobs:
+Seven recurring jobs:
 
   1. `process_due_pings`           — every 60s. Finds Ping rows where
      scheduled_for <= now and sent_at IS NULL, delivers them (or logs in
@@ -21,6 +21,14 @@ Five recurring jobs:
   5. `auto_delete_old_completed`   — every hour. Per-user retention sweep
      for COMPLETE commitments: hard-delete if older than X days, or archive
      them all if X==0.
+
+  6. `scan_for_commitments`        — every AGENT_SCAN_INTERVAL_MINUTES.
+     For every user with `agent_enabled`, drains their buffered messages
+     through the LLM classifier and persists high-confidence captures.
+
+  7. `prune_agent_buffer`          — daily. Drops buffered messages older
+     than AGENT_BUFFER_RETENTION_DAYS so we don't keep raw message text
+     beyond what the agent needs.
 
 Runs in-process via APScheduler's `BackgroundScheduler` (thread pool). The
 sync SQLAlchemy code is happy in threads, and `BackgroundScheduler` keeps the
@@ -337,6 +345,58 @@ def auto_resume_on_hold() -> None:
             ping_svc.ensure_pending_ping(db, c, level)
 
 
+def scan_for_commitments() -> None:
+    """Drain every opted-in user's buffer through the LLM classifier.
+
+    Side effects beyond persistence (refreshing Home tabs for users with
+    fresh captures) are handled here so the agent service stays
+    Slack-ignorant. Best-effort: a Home refresh failure for one user
+    never blocks another.
+    """
+    from app.services import agent as agent_svc
+
+    with session_scope() as db:
+        results = agent_svc.scan_all(db)
+        # Gather (team_id, slack_user_id) pairs to refresh while the rows
+        # are still attached.
+        refresh_targets: list[tuple[str, str]] = []
+        for user_id, created in results.items():
+            if not created:
+                continue
+            owner = db.get(User, user_id)
+            if owner is None or owner.workspace is None:
+                continue
+            refresh_targets.append(
+                (owner.workspace.slack_team_id, owner.slack_user_id),
+            )
+
+    if not refresh_targets:
+        return
+    client = _get_client()
+    if not client or settings.dry_run_pings:
+        log.info("agent scan refresh [dry-run]: %d users", len(refresh_targets))
+        return
+    from app.slack_app import _refresh_home
+    for team_id, slack_user_id in refresh_targets:
+        try:
+            _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
+        except Exception:
+            log.exception(
+                "Home refresh after agent scan failed for %s/%s",
+                team_id, slack_user_id,
+            )
+
+
+def prune_agent_buffer() -> None:
+    """Drop agent message buffer rows older than the retention window."""
+    from app.services import agent as agent_svc
+
+    with session_scope() as db:
+        removed = agent_svc.prune_buffer(db)
+        if removed:
+            log.info("agent buffer prune: removed %d rows", removed)
+
+
 def start_scheduler(slack_client: Optional[Any] = None) -> None:
     """
     Start the scheduler. Pass a slack_bolt WebClient (or equivalent) so the
@@ -353,9 +413,22 @@ def start_scheduler(slack_client: Optional[Any] = None) -> None:
     scheduler.add_job(auto_resume_on_hold, "interval", minutes=5, id="auto_resume", replace_existing=True)
     scheduler.add_job(expire_reassignments, "interval", minutes=5, id="expire_reassignments", replace_existing=True)
     scheduler.add_job(auto_delete_old_completed, "interval", hours=1, id="auto_delete_completed", replace_existing=True)
+
+    # Agentic capture. Floor the interval at 1 minute so a misconfigured
+    # AGENT_SCAN_INTERVAL_MINUTES=0 doesn't tight-loop the scheduler.
+    scan_interval = max(1, settings.agent_scan_interval_minutes)
+    scheduler.add_job(
+        scan_for_commitments, "interval", minutes=scan_interval,
+        id="agent_scan", replace_existing=True,
+    )
+    scheduler.add_job(
+        prune_agent_buffer, "interval", hours=24,
+        id="agent_prune_buffer", replace_existing=True,
+    )
     scheduler.start()
-    log.info("Scheduler started (dry_run=%s, client=%s)",
-             settings.dry_run_pings, "yes" if _slack_client else "no")
+    log.info("Scheduler started (dry_run=%s, client=%s, agent_dry_run=%s)",
+             settings.dry_run_pings, "yes" if _slack_client else "no",
+             settings.agent_dry_run)
 
 
 def shutdown_scheduler() -> None:

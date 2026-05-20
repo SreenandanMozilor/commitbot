@@ -23,9 +23,19 @@ from sqlalchemy import (
     Time,
     UniqueConstraint,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db import Base
+
+import re as _re
+
+# Hex-color whitelist enforced model-side so EVERY write path — service
+# layer, direct ORM construction in init_db.py / slack_app.py, future
+# Alembic seed scripts — produces a value that's safe to interpolate
+# into the dashboard's inline CSS. Defense in depth alongside the
+# `safe_css_color` Jinja filter and the service-layer validation in
+# `commit_svc.create_priority_level`.
+_HEX_COLOR_RE = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
 
 def _uuid() -> str:
@@ -77,6 +87,7 @@ class CaptureSource(str, enum.Enum):
     NOTATION = "notation"                  # [[commit @person]] etc.
     MESSAGE_SHORTCUT = "message_shortcut"  # right-click → "Mark as commitment"
     DASHBOARD = "dashboard"                # created directly in web UI
+    AGENT = "agent"                        # auto-detected by the agentic classifier
 
 
 class ReassignmentStatus(str, enum.Enum):
@@ -155,6 +166,18 @@ class User(Base):
         Integer, default=24,
     )
 
+    # --- Agentic commitment capture ---
+    # When True, every message we see from this user in channels the bot is
+    # in is buffered and periodically classified by the LLM agent.
+    # High-confidence candidates auto-become commitments with a 1h Undo
+    # window on the Home tab. Defaults OFF — the agent is opt-in, mirroring
+    # the rest of the system's "data they can't see is worse than no data"
+    # ethos.
+    agent_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Per-user override of the system AGENT_CONFIDENCE_FLOOR. Stored as an
+    # integer 0..100 (percent) for simplicity. NULL = use the system floor.
+    agent_confidence_floor_pct: Mapped[Optional[int]] = mapped_column(Integer)
+
     # Set the first time the user completes Sign-in-with-Slack on the
     # dashboard. NULL means they were auto-provisioned by a bot interaction
     # (or seeded for demo) and haven't proven ownership yet — the Slack
@@ -196,6 +219,21 @@ class PriorityLevel(Base):
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     user: Mapped[User] = relationship(back_populates="priority_levels")
+
+    @validates("color")
+    def _validate_color(self, _key: str, value: object) -> str:
+        """Reject anything that isn't a strict `#abc` / `#aabbcc` hex value.
+
+        Runs on every assignment, including the implicit one during ORM
+        construction (`PriorityLevel(color="…")`). Keeps the CSS-injection
+        surface closed even when callers bypass the service layer.
+        """
+        s = "" if value is None else str(value).strip()
+        if not _HEX_COLOR_RE.match(s):
+            raise ValueError(
+                f"Invalid priority color {value!r} — must be hex like #aabbcc."
+            )
+        return s
 
 
 class Notation(Base):
@@ -271,6 +309,15 @@ class Commitment(Base):
     # Conflict-resolution (F9)
     version: Mapped[int] = mapped_column(Integer, default=1)
     last_writer: Mapped[Optional[str]] = mapped_column(String(32))  # 'slack' | 'dashboard'
+
+    # --- Agent provenance (only set when source == CaptureSource.AGENT) ---
+    # Confidence the classifier reported for this capture, stored as 0.0..1.0.
+    # Surfaced in the 'Recently auto-captured' Home section so the user can
+    # eyeball "the agent was 0.93 sure, fine" vs "0.78, double-check this."
+    agent_confidence: Mapped[Optional[float]] = mapped_column()
+    # Short rationale the model returned. Kept under ~280 chars so it fits
+    # in a Block Kit context line. NULL for non-agent captures.
+    agent_rationale: Mapped[Optional[str]] = mapped_column(Text)
 
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # for 48hr Bin
@@ -366,3 +413,55 @@ class Ping(Base):
     action_taken_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     commitment: Mapped[Commitment] = relationship(back_populates="pings")
+
+
+# ---------------------------------------------------------------------------
+# Agentic capture
+# ---------------------------------------------------------------------------
+
+class AgentMessageBuffer(Base):
+    """
+    Lightweight rolling buffer of Slack messages we plan to feed to the
+    classifier. Populated by the message event handler when the sender has
+    `agent_enabled=True`; drained by the periodic scan job.
+
+    Why a buffer instead of pulling history on demand:
+      - The bot is already subscribed to message events for channels it's in,
+        so we don't need extra `conversations.history` scope.
+      - We classify in batches, which is dramatically cheaper than one LLM
+        call per message.
+      - `processed_at` makes the sweep idempotent — re-running the job won't
+        re-classify rows it's already looked at.
+
+    Retention: pruned by the scheduler after `AGENT_BUFFER_RETENTION_DAYS`,
+    regardless of whether they were classified — we don't keep raw message
+    text indefinitely.
+    """
+    __tablename__ = "agent_message_buffer"
+    __table_args__ = (
+        # Dedup: a single Slack message should buffer once per user. The
+        # Slack event API can re-deliver under retry; this keeps us honest.
+        UniqueConstraint(
+            "user_id", "slack_channel_id", "slack_message_ts",
+            name="uq_agent_buffer_message",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True,
+    )
+    slack_channel_id: Mapped[str] = mapped_column(String(32))
+    slack_message_ts: Mapped[str] = mapped_column(String(32))
+    text: Mapped[str] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True,
+    )
+    # When non-null, the agent has already examined this row in a batch.
+    # The classifier's verdict isn't stored here — if it was a commitment,
+    # the row in `commitments` is the record. Negative classifications
+    # leave no trace beyond `processed_at`.
+    processed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True,
+    )
