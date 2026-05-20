@@ -128,12 +128,19 @@ Return ONLY a JSON array. No prose, no markdown fences."""
 
 
 def _format_user_prompt(messages: Sequence[HarvestedMessage]) -> str:
+    # Use json.dumps to escape user-controlled text. Otherwise a message
+    # containing `"` or a fabricated JSON object could close the prompt's
+    # quoted string and inject prompt instructions or fake verdicts —
+    # since the agent classifies the SENDER's own messages, the blast
+    # radius is bounded to the sender's own captures, but it would still
+    # let a malicious user auto-create commitments for themselves with
+    # arbitrary confidence and rationale.
     lines = ["Classify the following messages:\n"]
     for m in messages:
-        # Keep each message on a single line so the input is grep-able in
-        # logs and the model's `message_id` echo is unambiguous.
-        text = (m.text or "").replace("\n", " ").strip()
-        lines.append(f'- id: "{m.id}"  text: "{text[:500]}"')
+        text = (m.text or "").replace("\n", " ").strip()[:500]
+        lines.append(
+            f"- id: {json.dumps(m.id)}  text: {json.dumps(text)}"
+        )
     return "\n".join(lines)
 
 
@@ -265,7 +272,11 @@ class AnthropicProvider:
         try:
             resp = self._client.messages.create(
                 model=self._model,
-                max_tokens=2000,
+                # ~80 tokens per verdict object × _MAX_BATCH_SIZE (30) ≈
+                # 2400 tokens, plus a little JSON framing. 2k truncated
+                # full batches mid-array; 4k leaves headroom so a verbose
+                # rationale doesn't tip into JSON repair territory.
+                max_tokens=4096,
                 system=SYSTEM_PROMPT,
                 messages=[
                     {"role": "user", "content": user_prompt},

@@ -66,10 +66,9 @@ log = logging.getLogger(__name__)
 _MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 _PLAIN_MENTION_RE = re.compile(r"(?<![\w<])@([A-Za-z][\w\-.]{0,63})")
 
-# Cap how many messages go in one batched classify call. The Anthropic
-# 2k-token output budget comfortably handles ~40 messages of typical chat
-# length; we keep some headroom so a verbose user doesn't tip into JSON
-# truncation territory.
+# Cap how many messages go in one batched classify call. Each verdict
+# object is ~80 tokens; AnthropicProvider asks for 4k max_tokens, so 30
+# messages leaves comfortable headroom even with verbose rationales.
 _MAX_BATCH_SIZE = 30
 
 
@@ -244,38 +243,55 @@ def scan_user(
             )
             continue
 
-        r.processed_at = now
-
-        if not v.is_commitment or v.confidence < floor:
-            continue
-
-        recipients = _extract_mentions(r.text)
-        deadline = _parse_deadline_hint(v.deadline_hint)
-
+        # Per-row SAVEPOINT: an unexpected failure on row N (a race with a
+        # manual scan colliding on the unique (workspace, channel, ts)
+        # constraint, a flaky DB) must not roll back rows 0..N-1 in the
+        # outer transaction. ValueError from create_commitment is "this
+        # row is bad" — handled inline, savepoint commits with
+        # processed_at set so we don't re-classify it next sweep.
         try:
-            c = commit_svc.create_commitment(
-                db,
-                owner=user,
-                text=r.text,
-                source=CaptureSource.AGENT,
-                slack_channel_id=r.slack_channel_id,
-                slack_message_ts=r.slack_message_ts,
-                deadline=deadline,
-                recipient_slack_user_ids=recipients,
-            )
-        except ValueError as e:
-            log.warning("agent capture rejected for row=%s: %s", r.id, e)
-            continue
+            with db.begin_nested():
+                r.processed_at = now
 
-        # If `create_commitment` returned an existing row (slash-command
-        # or notation got there first via the dedup key), don't stomp its
-        # provenance. Only stamp agent metadata on fresh AGENT captures.
-        if c.source == CaptureSource.AGENT and c.agent_confidence is None:
-            c.agent_confidence = v.confidence
-            c.agent_rationale = (v.rationale or "")[:280]
-            level = db.get(PriorityLevel, c.priority_level_id) if c.priority_level_id else None
-            ping_svc.schedule_initial_ping(db, c, level)
-            created.append(c)
+                if not v.is_commitment or v.confidence < floor:
+                    continue
+
+                recipients = _extract_mentions(r.text)
+                deadline = _parse_deadline_hint(v.deadline_hint)
+
+                try:
+                    c = commit_svc.create_commitment(
+                        db,
+                        owner=user,
+                        text=r.text,
+                        source=CaptureSource.AGENT,
+                        slack_channel_id=r.slack_channel_id,
+                        slack_message_ts=r.slack_message_ts,
+                        deadline=deadline,
+                        recipient_slack_user_ids=recipients,
+                    )
+                except ValueError as e:
+                    log.warning("agent capture rejected for row=%s: %s", r.id, e)
+                    continue
+
+                # If `create_commitment` returned an existing row (slash-
+                # command or notation got there first via the dedup key),
+                # don't stomp its provenance. Only stamp agent metadata on
+                # fresh AGENT captures.
+                if c.source == CaptureSource.AGENT and c.agent_confidence is None:
+                    c.agent_confidence = v.confidence
+                    c.agent_rationale = (v.rationale or "")[:280]
+                    level = (
+                        db.get(PriorityLevel, c.priority_level_id)
+                        if c.priority_level_id else None
+                    )
+                    ping_svc.schedule_initial_ping(db, c, level)
+                    created.append(c)
+        except Exception:
+            # Savepoint rolled back — processed_at clear, no commitment
+            # written. Row stays unprocessed and the next sweep retries.
+            log.exception("agent capture failed unexpectedly for row=%s", r.id)
+            continue
 
     return created
 
