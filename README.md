@@ -8,7 +8,9 @@ your PR tomorrow"*, *"I'll get you that number"* — and gently reminds
 you about them on a cadence that escalates as the deadline approaches.
 
 > **Status:** MVP. The core capture / pinging / reassignment / dashboard
-> flows are functional and have 108 automated tests guarding them.
+> flows are functional, plus an opt-in **agentic capture** layer that
+> watches your Slack messages and auto-logs the ones that look like
+> commitments. 137 automated tests guard everything.
 > A few things are deliberately deferred (Meeting AI, Jira / Zendesk
 > integration, dependency-blocking links, daily digest, native mobile)
 > — see [Things deliberately out of scope](#things-deliberately-out-of-scope).
@@ -52,6 +54,11 @@ CommitBot logs it, posts a public confirmation, and starts pinging you
 on a cadence that **accelerates as the deadline approaches**. You can
 reply *"Done"* from the ping DM, snooze it, put it on hold, or **hand
 it off to a teammate** (who has to agree before it's theirs).
+Or you can skip `/commit` entirely: opt into the **agent** and CommitBot
+will quietly watch your messages, classify the ones that look like
+promises (*"I'll review your PR tonight"*, *"remind me to email the
+vendor tomorrow"*) with an LLM, and log them with an extracted deadline
+and a one-click Undo if it got one wrong.
 Everything's also visible in a web dashboard you sign into with your
 Slack account.
 
@@ -94,13 +101,15 @@ Slack account.
                                   │   └──────────────────────────────┘ │
                                   │                                    │
                                   │   ┌──────────────────────────────┐ │
-                                  │   │ APScheduler (5 background   │ │
+                                  │   │ APScheduler (7 background   │ │
                                   │   │ jobs, same process)         │ │
                                   │   │  • process_due_pings  (60s) │ │
+                                  │   │  • scan_for_commitments(1m) │ │
                                   │   │  • auto_resume_on_hold (5m) │ │
                                   │   │  • expire_reassignments (5m)│ │
                                   │   │  • purge_bin           (1h) │ │
                                   │   │  • auto_delete_completed(1h)│ │
+                                  │   │  • prune_agent_buffer  (24h)│ │
                                   │   └──────────────────────────────┘ │
                                   └────────────────────────────────────┘
 ```
@@ -138,6 +147,7 @@ drift.
 | HTML templates | **Jinja2 + HTMX** | Server-rendered HTML with surgical row swaps (no SPA, no JS build). |
 | Sessions | **itsdangerous** | Signed-cookie sessions; same library Flask uses. |
 | OAuth | **Sign in with Slack** (OpenID Connect) | Real auth, not a `?user_id=` query param. |
+| LLM client | **`anthropic` SDK** (Claude Haiku 4.5) | Powers the agentic capture classifier. Falls back to a deterministic regex stub when no API key is configured, so dev + tests cost nothing. |
 
 The connecting theme: **boring tech, picked deliberately**. Every
 choice is the conventional one for its job. There's nothing here that
@@ -148,29 +158,33 @@ will surprise a future contributor.
 ## Table of contents
 
 1. [Capture — how a commitment gets into the system](#capture--how-a-commitment-gets-into-the-system)
-2. [Recipients — the rule about `@mentions`](#recipients--the-rule-about-mentions)
-3. [Pinging — the cadence calculator](#pinging--the-cadence-calculator)
-4. [States — the lifecycle of a commitment](#states--the-lifecycle-of-a-commitment)
-5. [Outcomes — success vs failed](#outcomes--success-vs-failed)
-6. [Reassignment — handing a commitment off](#reassignment--handing-a-commitment-off)
-7. [Timezones](#timezones)
-8. [Sign in with Slack + onboarding gate](#sign-in-with-slack--onboarding-gate)
-9. [Permissions — who can do what](#permissions--who-can-do-what)
-10. [Retention — auto-delete or auto-archive](#retention--auto-delete-or-auto-archive)
-11. [The web dashboard](#the-web-dashboard)
-12. [The Slack App Home tab](#the-slack-app-home-tab)
-13. [End-to-end flows](#end-to-end-flows)
-14. [Data model](#data-model)
-15. [Background jobs](#background-jobs)
-16. [Running it locally](#running-it-locally)
-17. [Tests](#tests)
-18. [Things deliberately out of scope](#things-deliberately-out-of-scope)
+2. [Agentic capture — opt-in LLM auto-logging](#agentic-capture--opt-in-llm-auto-logging)
+3. [Recipients — the rule about `@mentions`](#recipients--the-rule-about-mentions)
+4. [Pinging — the cadence calculator](#pinging--the-cadence-calculator)
+5. [States — the lifecycle of a commitment](#states--the-lifecycle-of-a-commitment)
+6. [Outcomes — success vs failed](#outcomes--success-vs-failed)
+7. [Reassignment — handing a commitment off](#reassignment--handing-a-commitment-off)
+8. [Timezones](#timezones)
+9. [Sign in with Slack + onboarding gate](#sign-in-with-slack--onboarding-gate)
+10. [Permissions — who can do what](#permissions--who-can-do-what)
+11. [Retention — auto-delete or auto-archive](#retention--auto-delete-or-auto-archive)
+12. [The web dashboard](#the-web-dashboard)
+13. [The Slack App Home tab](#the-slack-app-home-tab)
+14. [End-to-end flows](#end-to-end-flows)
+15. [Data model](#data-model)
+16. [Background jobs](#background-jobs)
+17. [Running it locally](#running-it-locally)
+18. [Tests](#tests)
+19. [Things deliberately out of scope](#things-deliberately-out-of-scope)
 
 ---
 
 ## Capture — how a commitment gets into the system
 
-There are **four ways** to log a commitment:
+There are **five ways** to log a commitment. Four are deliberate user
+actions; the fifth is the **agent**, which watches messages and decides
+on its own. The first four are covered here; the agent has its own
+[Agentic capture](#agentic-capture--opt-in-llm-auto-logging) section.
 
 ### 1. `/commit <text>` slash command
 
@@ -229,6 +243,164 @@ dashboard.
 - **Default priority.** If you don't specify one, the user's default
   level is used (auto-created on first sign-in with sensible defaults:
   4h base, 24h escalation window, 30m floor, ×2 rate).
+- **Visible feedback toggles** (per-user, in *Settings → Preferences*):
+  - **Threaded confirmation** (default ON) — bot replies in-thread with
+    *":white_check_mark: Logged as a commitment."* and a Done button on
+    every successful capture.
+  - **Reaction signal** (default OFF) — bot adds a `:bookmark_tabs:`
+    reaction to the captured message. Useful as a silent confirmation
+    when you don't want a thread reply.
+  Both flags are read in the message-event handler and the slash-command
+  handler; they apply uniformly across all capture paths.
+
+---
+
+## Agentic capture — opt-in LLM auto-logging
+
+The agent is a fifth capture path that doesn't require any deliberate
+user action per message. Once turned on (Home tab → *Turn agent on*),
+CommitBot quietly watches messages the user posts in channels it's in,
+classifies the ones that look like personal commitments with an LLM,
+and logs them — with an extracted deadline and a one-click Undo on the
+Home tab if it got something wrong.
+
+### Two-stage pipeline
+
+```
+   user posts a message
+            │
+            ▼
+   ┌───────────────────────────┐    cheap, sync, regex-only
+   │ buffer_message            │    — stub patterns:
+   │   INSERT INTO              │      "I'll …", "I will …",
+   │   agent_message_buffer     │      "I can pick up …",
+   └────────────┬──────────────┘      "remind me to …",
+                │                     "don't let me forget …"
+                ▼
+   ┌───────────────────────────┐
+   │ stub pre-filter           │     If the stub *might* be a
+   │  (StubProvider regexes)   │     commitment …
+   └────────────┬──────────────┘
+                │   yes
+                ▼
+   ┌───────────────────────────┐    background thread, deduped per user
+   │ scan_user                 │     — drains the buffer through the
+   │   provider.classify(...)  │       Anthropic API in one batched call
+   │   per-row SAVEPOINT       │     — system prompt is anchored to the
+   │   ┌─ create_commitment    │       user's `Current time` + `Sender
+   │   │  source=AGENT          │       timezone` so "tomorrow" / "by
+   │   │  agent_confidence,    │       Friday" resolve to real dates
+   │   │  agent_rationale       │
+   │   └─ schedule_initial_ping│
+   └───────────────────────────┘
+
+   PLUS:  scan_for_commitments  every 1 minute (scheduler tick)
+          → per-user due-check: only users whose
+            agent_scan_interval_minutes has elapsed
+            since their last scan are actually classified.
+          (Backstop sweep for anything the stub missed.)
+```
+
+The stub is the cost gate: only messages it flags get an LLM call, so a
+chatty channel doesn't run up an Anthropic bill on chit-chat. The LLM
+is the final arbiter — false positives in the stub just mean one extra
+batched classify call, not a bogus capture.
+
+### What counts as a commitment
+
+The classifier's system prompt teaches three shapes, all positive:
+
+| Shape | Examples |
+|---|---|
+| **First-person promise** | *"I'll send the spec by Friday"*, *"I can pick up that bug"*, *"I'll review your PR tonight"* |
+| **Self-directed reminder** | *"Remind me to email the vendor tomorrow"*, *"Don't let me forget to call Priya"*, *"I should remember to file the expense report"* |
+| **Future-tense uptake** | *"Will get back to you with the report tomorrow"*, *"getting that doc to you by EOD"* |
+
+And the anti-patterns it's taught to reject:
+
+- Vague intent (*"I'll think about it"*)
+- Low-conviction qualifiers (*"maybe I'll grab lunch"*)
+- Third-party action (*"John should fix that"*)
+- Hypothetical conditionals (*"I'll buy you lunch if X"*)
+- Past tense (*"I was going to send it yesterday"*)
+- Group intent (*"we need to ship this"*)
+
+### Deadline extraction
+
+The user prompt header includes the sender's current local time and IANA
+timezone, so the model can resolve relative phrases:
+
+- *"tomorrow"* → next calendar day at 09:00 in the user's zone
+- *"tonight"* → today at ~21:00
+- *"by Friday"* → next upcoming Friday at 17:00
+- *"EOD"* → today at 17:00
+
+The returned ISO string is validated by `_parse_deadline_hint` —
+anything in the past or more than a year out is rejected (the user can
+set one manually from Home if the guess was useless).
+
+### Per-user controls (Home tab)
+
+```
+Agent: ON | model: claude-haiku-4-5 | scan: every 15m | floor: ≥75% | buffered: 0
+[ Turn agent off ] [ Scan recent messages ] [ Scan interval ▾ ]
+```
+
+| Control | Effect |
+|---|---|
+| **Turn agent on/off** | Toggles `User.agent_enabled`. When off, no buffering, no classification. |
+| **Scan recent messages** | Synchronously drains the user's buffer through the LLM. Useful for "I just turned it on, classify what I've said." |
+| **Scan interval** | `static_select` with 1 / 5 / 15 / 30 / 60-minute options. Backstop sweep cadence — independent of the instant-trigger path, which fires on every likely-candidate message regardless. |
+
+The status line also surfaces (read-only) the model name, the **effective
+confidence floor** (verdicts below it are silently dropped), buffer
+count, and a `:construction:` dry-run badge when `AGENT_DRY_RUN=true`.
+
+The confidence floor is set via the `AGENT_CONFIDENCE_FLOOR` env var
+(default `0.75`). `User.agent_confidence_floor_pct` exists as a per-user
+override column, but there's no UI binding yet — change it via DB or
+plumb a form when you need it.
+
+### The Undo affordance
+
+Every fresh agent capture shows up in a *Recently auto-captured* strip
+on the Home tab for `AGENT_UNDO_WINDOW_MINUTES` (default 60). Each row
+shows the captured text, the model's rationale (truncated to ~240
+chars), and the confidence percentage, plus three buttons:
+
+- **Undo (delete)** — **hard-deletes** the commitment. A false positive
+  shouldn't pollute the user's failed-commitments history, so this
+  bypasses the 48h Bin entirely. Behind a Slack confirmation modal so
+  it's not a single-click footgun. Refused for non-agent captures and
+  for agent captures past their window.
+- **Set deadline** — opens the same modal as the rest of Home, so the
+  user can correct or set a deadline the model missed.
+- **Mark done** — for the case where the agent caught the commitment
+  but you'd already finished it; one click to terminal.
+
+### Safety rails
+
+- **Opt-in.** `User.agent_enabled` is False by default. The bot never
+  classifies messages from users who haven't turned it on.
+- **Buffer retention.** Raw message text in `AgentMessageBuffer` is
+  pruned after `AGENT_BUFFER_RETENTION_DAYS` (default 7), classified or
+  not. We don't keep arbitrary Slack content indefinitely.
+- **Prompt-injection escape.** Message text is wrapped in `json.dumps`
+  before going into the user prompt, so a message containing fake
+  verdict JSON can't smuggle a captured commitment with a fabricated
+  confidence.
+- **Per-row SAVEPOINTs.** A failure on row N (DB hiccup, dedup race
+  with the notation path) doesn't roll back rows 0..N-1.
+- **Dry-run mode.** `AGENT_DRY_RUN=true` runs the full classify loop
+  but skips the writes — useful for prompt tuning. Default `false`.
+- **Dedup with the notation path.** If a message matches both a custom
+  notation and the agent's verdict, the `(workspace, channel, ts)`
+  unique constraint on `Commitment` ensures one row.
+
+> Code: `app/services/agent.py` (orchestration), `app/services/llm.py`
+> (provider abstraction + Anthropic + stub), `AgentMessageBuffer` in
+> `app/models.py`, agent UI in `_build_home_agent_section` of
+> `app/slack_app.py`.
 
 ---
 
@@ -244,6 +416,7 @@ for each capture path:
 | Custom notation | **Only if the notation pattern itself contains `@`.** A pattern like `\[\[commit.*@.*\]\]` opts into mention extraction; a pattern like `\[\[note.*\]\]` deliberately ignores `@`s in matching messages. |
 | Right-click → Mark as commitment | **From `@mentions` in the message text, if any.** If the message has no `@`, no recipients are stored. |
 | Dashboard *New commitment* form | From the explicit comma-separated *Who's this to?* field. |
+| Agentic capture | **Always** — `@mention`s in the buffered message text become recipients. The LLM also returns plain-text `recipient_hints` (free-form names), which are currently logged but not persisted. |
 
 **Two forms of mentions are recognised** in the Slack paths:
 
@@ -603,7 +776,7 @@ SPA. Theme: light / dark / auto (follows system).
 | **Reassigned** | Commitments you **handed off** (someone else accepted). Read-only view; pill shows current owner. |
 | **Complete** | Done, not yet archived/deleted. |
 | **Archived** | Done and filed. |
-| **Deleted** | In the 48h bin. |
+| **Deleted** | In the 48h bin. Each row has **Restore** (rolls it back to its `prior_state` — ACTIVE, ON_HOLD, REASSIGNED, or COMPLETE) and **Purge** (immediate hard-delete, skips the 48h timer) buttons. |
 | **Success** | Cross-cutting filter — all terminal commitments with `outcome=SUCCESS`. |
 | **Failed** | Same, `outcome=FAILED`. |
 
@@ -639,7 +812,7 @@ JSON and CSV exports of all your commitments at `/export/json` and
 ## The Slack App Home tab
 
 Open CommitBot in your Slack sidebar — the Home tab is your in-Slack
-dashboard. Three sections, in priority order:
+dashboard. Sections, in priority order:
 
 1. **Awaiting your response** — pending incoming reassignment requests,
    with Accept / Decline buttons.
@@ -647,13 +820,34 @@ dashboard. Three sections, in priority order:
    with a Cancel button.
 3. **Your active commitments** — every ACTIVE and REASSIGNED commitment
    you own. Each shows the deadline, current cadence (e.g. *"🔔 every
-   30m"*), recipients, and a row of buttons: *Edit deadline*, *Reassign*,
-   *Mark done*, *Stop / Resume escalation* (context-aware).
+   30m"*), recipients, and a row of buttons:
+   - **Edit deadline** / **Set deadline** (label depends on whether one
+     is set) — opens a modal with a date+time picker labelled in the
+     user's timezone.
+   - **Hold** — indefinite pause; the commitment moves to ON_HOLD,
+     `prior_state` is stashed, and auto-resume kicks in only via the
+     deadline-window trigger (no `on_hold_resume_at` set).
+   - **Reassign** — opens the modal with the workspace-wide member
+     dropdown (un-onboarded teammates shown but disabled).
+   - **Mark done** — terminal transition; outcome stamp written here.
+   - **Stop escalation** / **Resume escalation** (context-aware) —
+     hidden when the cadence is already at the floor.
+4. **Agent strip** — one-line status (ON/off, model, scan interval,
+   confidence floor, buffered count, dry-run badge) and three controls:
+   *Turn agent on/off*, *Scan recent messages*, and a *Scan interval*
+   dropdown (1 / 5 / 15 / 30 / 60 min). When the agent has captured
+   anything in the last `AGENT_UNDO_WINDOW_MINUTES`, those captures
+   render below with confidence %, rationale, and an **Undo (delete)**
+   button.
+5. **Footer** — *Clear all CommitBot DMs* button that bulk-deletes the
+   bot's old pings and notification DMs from your DMs view (runs in a
+   background thread so the click acks instantly).
 
 The home view auto-refreshes after every action via `views.publish`,
 so what you see in Slack always reflects the latest state.
 
-> Code: `_build_home_view` in `app/slack_app.py`.
+> Code: `_build_home_view` and `_build_home_agent_section` in
+> `app/slack_app.py`.
 
 ---
 
@@ -776,6 +970,10 @@ above.
               │  global_pause    start_of_day     │
               │  auto_delete_completed_after_days │
               │  auto_resume_hours_before_deadline│
+              │  agent_enabled                    │ ← opt-in to LLM capture
+              │  agent_confidence_floor_pct       │ ← per-user override
+              │  agent_scan_interval_minutes      │ ← backstop sweep cadence
+              │  last_agent_scan_at               │ ← for due-check
               └──────┬────────────────────────────┘
                      │
               ┌──────┼──────────────────┐
@@ -791,6 +989,8 @@ above.
    │  deadline       │
    │  completed_at   │
    │  priority_level │
+   │  source         │ ◄── CaptureSource enum (incl. AGENT)
+   │  agent_confidence, agent_rationale  │ ← set on AGENT captures only
    │  version        │ ◄── for conflict resolution
    │  last_writer    │     ('slack' or 'dashboard')
    │  workspace_id   │
@@ -805,6 +1005,15 @@ Recipient CommitmentEdit   Reassignment           Ping
  'to' on   changed what,    attempt;  PENDING /    ping, indexed on
  the row)  when, where)     ACCEPTED / DECLINED /  scheduled_for for fast
                             EXPIRED / CANCELLED)   sweep queries)
+
+   ┌────────────────────────────────────────┐
+   │  AgentMessageBuffer                     │  (used by the agent only)
+   │  ────────────────────────────────────── │
+   │  user_id, slack_channel_id,             │  unique together — Slack
+   │  slack_message_ts                       │  event retries don't double-buffer
+   │  text  (capped at 2000 chars)           │
+   │  created_at, processed_at               │  processed_at = "already classified"
+   └────────────────────────────────────────┘
 ```
 
 A few callouts:
@@ -820,22 +1029,28 @@ A few callouts:
   the message on outcome (retire the buttons, show "you accepted").
 - **`Ping`** rows let the scheduler find work in `O(log n)` instead of
   scanning every commitment.
+- **`AgentMessageBuffer`** is the only table that stores raw Slack
+  message text. The prune job clears it after `AGENT_BUFFER_RETENTION_DAYS`
+  so we don't keep arbitrary chat content beyond what the classifier
+  needs.
 
 ---
 
 ## Background jobs
 
-Five recurring jobs run in the same Python process via APScheduler:
+Seven recurring jobs run in the same Python process via APScheduler:
 
 | Job | Cadence | What it does |
 |---|---|---|
 | `process_due_pings` | 60s | Deliver pings whose `scheduled_for` is now or earlier; schedule the next ping for each. Includes both ACTIVE and REASSIGNED states. During `global_pause`, consumes AND queues next (so unpausing doesn't leave an empty queue). |
+| `scan_for_commitments` | 60s | Backstop sweep for the agent: iterate users with `agent_enabled=True` and run `scan_user` for each one whose per-user `agent_scan_interval_minutes` has elapsed since `last_agent_scan_at`. Instant-trigger threads handle latency-sensitive captures; this job catches the long tail the stub pre-filter didn't flag. |
 | `purge_bin` | 1h | Hard-delete commitments that have been DELETED for >48h. |
 | `auto_resume_on_hold` | 5m | Two triggers: (a) explicit `on_hold_resume_at` past, or (b) deadline within the user's `auto_resume_hours_before_deadline` window. Skips reassignment limbo. Restores `prior_state`. |
 | `expire_reassignments` | 5m | Flip PENDING reassignments past 24h to EXPIRED. Roll the commitment back. DM both parties. |
 | `auto_delete_old_completed` | 1h | Per-user retention: hard-delete after X days (X > 0) OR archive (X = 0). |
+| `prune_agent_buffer` | 24h | Delete `AgentMessageBuffer` rows older than `AGENT_BUFFER_RETENTION_DAYS` (default 7). Independent of whether they were classified — raw message text doesn't live indefinitely. |
 
-All five are written to be **idempotent** — running them twice
+All seven are written to be **idempotent** — running them twice
 produces the same result as once. Important for retries.
 
 ---
@@ -862,6 +1077,17 @@ cp .env.example .env
 
 Dashboard: <http://localhost:8000>. Expose via ngrok / Cloudflare Tunnel
 for the Slack webhook to reach you.
+
+### Optional: enable the agent
+
+Set `ANTHROPIC_API_KEY` in `.env` to wire up real LLM classification.
+Without it, the agent falls back to the deterministic stub classifier —
+fine for development, useless for production (regex only, no real
+language understanding). Other agent knobs (`AGENT_MODEL`, `AGENT_DRY_RUN`,
+`AGENT_CONFIDENCE_FLOOR`, `AGENT_UNDO_WINDOW_MINUTES`,
+`AGENT_BUFFER_RETENTION_DAYS`, `AGENT_SCAN_INTERVAL_MINUTES`) are
+documented in `.env.example`. Per-user toggles live on the Slack Home
+tab and the dashboard settings page.
 
 ### Slack app config (one-time)
 
@@ -892,7 +1118,7 @@ In <https://api.slack.com/apps>:
 .venv/bin/python -m pytest tests/ -q
 ```
 
-**108 tests, ~3 seconds.** Organised by surface:
+**137 tests, ~7 seconds.** Organised by surface:
 
 - **`test_services.py`** — notation validation, message dedup,
   versioning, on-hold precedence, bin recovery, field validation,
@@ -913,6 +1139,15 @@ In <https://api.slack.com/apps>:
 - **`test_outcomes.py`** — every rule for SUCCESS/FAILED across
   `mark_done`, `soft_delete`, `archive`, `reopen`, `restore_from_bin`,
   plus the immediate auto-archive at X=0.
+- **`test_agent.py`** — StubProvider classification (first-person
+  promise, vague intent, hypothetical, third-party, self-directed
+  reminders); buffer idempotency + agent-disabled refusal; scan
+  persistence above floor, drop below floor, dry-run, dedup;
+  `is_likely_candidate` pre-filter; per-user scan interval +
+  due-check (`is_scan_due` true on never-scanned, false within
+  window, true after window); `last_agent_scan_at` stamping; Undo
+  hard-deletes within the window and refuses past it / for non-agent
+  captures; buffer prune.
 - **`test_smoke.py`** — end-to-end: app boots, demo data seeds, every
   dashboard tab renders, mark-done round-trips through HTMX,
   cross-user mutation is rejected, **sender-side reassignment
