@@ -75,7 +75,13 @@ class LLMProvider(Protocol):
     """Minimal protocol every classifier implementation satisfies."""
     name: str
 
-    def classify(self, messages: Sequence[HarvestedMessage]) -> list[ClassifiedCandidate]:
+    def classify(
+        self,
+        messages: Sequence[HarvestedMessage],
+        *,
+        now: Optional[datetime] = None,
+        tz: Optional[str] = None,
+    ) -> list[ClassifiedCandidate]:
         ...
 
 
@@ -99,6 +105,14 @@ COUNT AS A COMMITMENT
   - "I can pick up that bug"
   - "I'll review your PR tonight"
   - "Will get back to you with the report tomorrow"
+  - "Remind me to send the report tomorrow"        (self-directed reminder)
+  - "Don't let me forget to call the vendor"       (self-directed reminder)
+  - "I should remember to file the expense report" (self-directed reminder)
+
+Self-directed reminders ("remind me to X", "don't let me forget to X",
+"I should remember to X") DO count — the sender is committing to their
+future self with this bot as the reminder mechanism. Treat them the same
+as first-person promises: extract the action and deadline if any.
 
 DO NOT COUNT
   - "I'll think about it"               (too vague to track)
@@ -114,9 +128,19 @@ For each message return JSON:
     "is_commitment": true | false,
     "confidence": 0.0..1.0,
     "rationale": "<one short sentence, <= 200 chars>",
-    "deadline_hint": "ISO-8601 datetime if you can infer one, else null",
+    "deadline_hint": "ISO-8601 datetime with offset, or null",
     "recipient_hints": ["names mentioned as the audience", ...]
   }
+
+Deadline extraction rules (important):
+  - Resolve relative times against the "Current time" given in the user prompt.
+    "tomorrow" → next calendar day; "tonight" → today ~21:00; "by Friday" →
+    next upcoming Friday at 17:00; "end of day" / "EOD" → today 17:00;
+    "next week" → next Monday 17:00.
+  - Emit deadline_hint in the sender's local timezone (also given in the user
+    prompt) as a full ISO-8601 string WITH offset, e.g. "2026-05-21T17:00:00+05:30".
+  - The deadline MUST be strictly in the future relative to Current time.
+  - If the message has no temporal cue at all, return deadline_hint: null.
 
 Confidence calibration:
   >= 0.90 — unambiguous first-person promise with a clear action
@@ -127,7 +151,12 @@ Confidence calibration:
 Return ONLY a JSON array. No prose, no markdown fences."""
 
 
-def _format_user_prompt(messages: Sequence[HarvestedMessage]) -> str:
+def _format_user_prompt(
+    messages: Sequence[HarvestedMessage],
+    *,
+    now: Optional[datetime] = None,
+    tz: Optional[str] = None,
+) -> str:
     # Use json.dumps to escape user-controlled text. Otherwise a message
     # containing `"` or a fabricated JSON object could close the prompt's
     # quoted string and inject prompt instructions or fake verdicts —
@@ -135,7 +164,16 @@ def _format_user_prompt(messages: Sequence[HarvestedMessage]) -> str:
     # radius is bounded to the sender's own captures, but it would still
     # let a malicious user auto-create commitments for themselves with
     # arbitrary confidence and rationale.
-    lines = ["Classify the following messages:\n"]
+    header: list[str] = []
+    if now is not None:
+        header.append(f"Current time: {now.isoformat(timespec='seconds')}")
+    if tz:
+        header.append(f"Sender timezone: {tz}")
+    lines: list[str] = []
+    if header:
+        lines.append(" | ".join(header))
+        lines.append("")
+    lines.append("Classify the following messages:\n")
     for m in messages:
         text = (m.text or "").replace("\n", " ").strip()[:500]
         lines.append(
@@ -155,6 +193,12 @@ _COMMITMENT_PATTERNS: list[tuple[re.Pattern, float, str]] = [
      "First-person future ('I'll …')"),
     (re.compile(r"\bi\s+will\s+\w+", re.I), 0.86,
      "First-person future ('I will …')"),
+    (re.compile(r"\bremind\s+me\s+to\s+\w+", re.I), 0.86,
+     "Self-directed reminder ('remind me to …')"),
+    (re.compile(r"\bdon['’]?t\s+let\s+me\s+forget\s+(to|about)\b", re.I), 0.85,
+     "Self-directed reminder ('don't let me forget …')"),
+    (re.compile(r"\bi\s+should\s+(remember|not\s+forget)\s+to\b", re.I), 0.82,
+     "Self-directed reminder ('I should remember to …')"),
     (re.compile(r"\bi\s+can\s+(pick\s+up|take|handle|do|own|cover)\b", re.I),
      0.82, "First-person uptake ('I can pick up …')"),
     (re.compile(r"\b(will\s+(get|send|have|share|do)|getting\s+\w+\s+to\s+you)\b", re.I),
@@ -186,7 +230,13 @@ class StubProvider:
     when no real provider is configured."""
     name = "stub"
 
-    def classify(self, messages: Sequence[HarvestedMessage]) -> list[ClassifiedCandidate]:
+    def classify(
+        self,
+        messages: Sequence[HarvestedMessage],
+        *,
+        now: Optional[datetime] = None,
+        tz: Optional[str] = None,
+    ) -> list[ClassifiedCandidate]:
         out: list[ClassifiedCandidate] = []
         for m in messages:
             text = (m.text or "").strip()
@@ -264,11 +314,17 @@ class AnthropicProvider:
         self._client = anthropic.Anthropic(api_key=api_key)
         self._model = model
 
-    def classify(self, messages: Sequence[HarvestedMessage]) -> list[ClassifiedCandidate]:
+    def classify(
+        self,
+        messages: Sequence[HarvestedMessage],
+        *,
+        now: Optional[datetime] = None,
+        tz: Optional[str] = None,
+    ) -> list[ClassifiedCandidate]:
         if not messages:
             return []
 
-        user_prompt = _format_user_prompt(messages)
+        user_prompt = _format_user_prompt(messages, now=now, tz=tz)
         try:
             resp = self._client.messages.create(
                 model=self._model,

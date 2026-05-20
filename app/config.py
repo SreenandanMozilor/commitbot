@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     agent_provider: str = "anthropic"
     anthropic_api_key: str = ""
     agent_model: str = "claude-haiku-4-5-20251001"
-    agent_dry_run: bool = True
+    agent_dry_run: bool = False
     agent_scan_interval_minutes: int = 30
     agent_confidence_floor: float = 0.75
     agent_undo_window_minutes: int = 60

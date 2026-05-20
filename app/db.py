@@ -138,6 +138,14 @@ def _apply_lightweight_migrations() -> None:
             conn.execute(text(
                 "ALTER TABLE users ADD COLUMN agent_confidence_floor_pct INTEGER"
             ))
+        if "agent_scan_interval_minutes" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN agent_scan_interval_minutes INTEGER"
+            ))
+        if "last_agent_scan_at" not in cols:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN last_agent_scan_at DATETIME"
+            ))
         # Self-heal any rows left with a lowercase outcome from an earlier
         # iteration of this migration. SAEnum reads/writes the enum NAME
         # (uppercase), so a stored 'success' triggers a LookupError on read.

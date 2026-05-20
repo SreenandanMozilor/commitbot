@@ -414,11 +414,13 @@ def start_scheduler(slack_client: Optional[Any] = None) -> None:
     scheduler.add_job(expire_reassignments, "interval", minutes=5, id="expire_reassignments", replace_existing=True)
     scheduler.add_job(auto_delete_old_completed, "interval", hours=1, id="auto_delete_completed", replace_existing=True)
 
-    # Agentic capture. Floor the interval at 1 minute so a misconfigured
-    # AGENT_SCAN_INTERVAL_MINUTES=0 doesn't tight-loop the scheduler.
-    scan_interval = max(1, settings.agent_scan_interval_minutes)
+    # Agentic capture. Tick every minute — per-user
+    # `agent_scan_interval_minutes` (with system default fallback) decides
+    # which users are actually due for a sweep. The per-user filter lives
+    # in agent.scan_all, so users with a 30-min interval get classified at
+    # most twice an hour even though we poll every minute.
     scheduler.add_job(
-        scan_for_commitments, "interval", minutes=scan_interval,
+        scan_for_commitments, "interval", minutes=1,
         id="agent_scan", replace_existing=True,
     )
     scheduler.add_job(

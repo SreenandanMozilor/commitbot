@@ -344,3 +344,133 @@ def test_scan_all_skips_disabled_users(db_session, alice):
     db_session.flush()
     out = agent_svc.scan_all(db_session, provider=StubProvider())
     assert out == {}
+
+
+# ---------------------------------------------------------------------------
+# Remind-me-to / self-directed reminders
+# ---------------------------------------------------------------------------
+
+def test_stub_classifies_remind_me_to():
+    """'remind me to X' is a self-directed commitment — must pass the stub."""
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="Remind me to send the report tomorrow"),
+    ])
+    assert out[0].is_commitment is True
+    assert out[0].confidence >= 0.85
+    assert "reminder" in out[0].rationale.lower()
+
+
+def test_stub_classifies_dont_let_me_forget():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="Don't let me forget to call the vendor"),
+    ])
+    assert out[0].is_commitment is True
+
+
+def test_remind_me_to_persists_as_commitment(db_session, alice):
+    """End-to-end: 'remind me to' messages survive buffer → scan → persist."""
+    from app.services import agent as agent_svc
+    from app.services.llm import StubProvider
+    from app.models import CaptureSource
+
+    agent_svc.buffer_message(
+        db_session, user=alice, channel_id="C1",
+        message_ts="1700000000.001000",
+        text="Remind me to email the vendor tomorrow",
+    )
+    created = agent_svc.scan_user(db_session, alice, provider=StubProvider())
+    assert len(created) == 1
+    assert created[0].source == CaptureSource.AGENT
+
+
+# ---------------------------------------------------------------------------
+# is_likely_candidate (instant-trigger pre-filter)
+# ---------------------------------------------------------------------------
+
+def test_is_likely_candidate_flags_first_person_future(db_session):
+    from app.services import agent as agent_svc
+    assert agent_svc.is_likely_candidate("I'll send the spec by Friday") is True
+    assert agent_svc.is_likely_candidate("Remind me to ship the build") is True
+
+
+def test_is_likely_candidate_rejects_chit_chat(db_session):
+    from app.services import agent as agent_svc
+    assert agent_svc.is_likely_candidate("hey how's it going") is False
+    assert agent_svc.is_likely_candidate("") is False
+    assert agent_svc.is_likely_candidate("John should fix that") is False
+
+
+# ---------------------------------------------------------------------------
+# Per-user scan interval + due-check
+# ---------------------------------------------------------------------------
+
+def test_effective_scan_interval_default(db_session, alice):
+    from app.services import agent as agent_svc
+    # System default is 30 (from config). With no per-user override we get it.
+    assert agent_svc.effective_scan_interval_minutes(alice) == 30
+
+
+def test_effective_scan_interval_user_override(db_session, alice):
+    from app.services import agent as agent_svc
+    alice.agent_scan_interval_minutes = 5
+    assert agent_svc.effective_scan_interval_minutes(alice) == 5
+
+
+def test_is_scan_due_true_for_never_scanned(db_session, alice):
+    from app.services import agent as agent_svc
+    assert alice.last_agent_scan_at is None
+    assert agent_svc.is_scan_due(alice) is True
+
+
+def test_is_scan_due_false_within_window(db_session, alice):
+    """A scan that just ran shouldn't be due again until the interval elapses."""
+    from app.services import agent as agent_svc
+    alice.agent_scan_interval_minutes = 15
+    alice.last_agent_scan_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    assert agent_svc.is_scan_due(alice) is False
+
+
+def test_is_scan_due_true_after_window(db_session, alice):
+    from app.services import agent as agent_svc
+    alice.agent_scan_interval_minutes = 5
+    alice.last_agent_scan_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+    assert agent_svc.is_scan_due(alice) is True
+
+
+def test_scan_user_stamps_last_agent_scan_at(db_session, alice):
+    """Every scan updates the timestamp — even an empty-buffer scan, so the
+    periodic sweep doesn't poll the same user every tick when idle."""
+    from app.services import agent as agent_svc
+    from app.services.llm import StubProvider
+
+    before = datetime.now(timezone.utc)
+    agent_svc.scan_user(db_session, alice, provider=StubProvider())
+    db_session.flush()
+    assert alice.last_agent_scan_at is not None
+    stamp = alice.last_agent_scan_at
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    assert stamp >= before
+
+
+def test_scan_all_skips_users_not_yet_due(db_session, alice):
+    """scan_all respects the per-user interval; recent scans aren't repeated."""
+    from app.services import agent as agent_svc
+    from app.services.llm import StubProvider
+
+    alice.agent_scan_interval_minutes = 30
+    alice.last_agent_scan_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    agent_svc.buffer_message(
+        db_session, user=alice, channel_id="C1",
+        message_ts="1700000000.002000",
+        text="I'll send the doc Friday",
+    )
+    out = agent_svc.scan_all(db_session, provider=StubProvider())
+    # User isn't due — scan_all returns no captures for them, and the
+    # buffer row stays unprocessed (untouched processed_at).
+    assert out == {}
+    from app.models import AgentMessageBuffer
+    row = db_session.query(AgentMessageBuffer).first()
+    assert row.processed_at is None

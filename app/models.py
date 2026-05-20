@@ -177,6 +177,16 @@ class User(Base):
     # Per-user override of the system AGENT_CONFIDENCE_FLOOR. Stored as an
     # integer 0..100 (percent) for simplicity. NULL = use the system floor.
     agent_confidence_floor_pct: Mapped[Optional[int]] = mapped_column(Integer)
+    # Per-user override of the system AGENT_SCAN_INTERVAL_MINUTES. The
+    # periodic sweep skips users whose `last_agent_scan_at` + interval is
+    # in the future. NULL = use the system default. Independent of the
+    # "instant scan on likely candidate" path: that fires regardless of
+    # interval whenever the cheap stub regex flags a buffered message.
+    agent_scan_interval_minutes: Mapped[Optional[int]] = mapped_column(Integer)
+    # Last time we drained this user's buffer through the classifier.
+    # Updated by both the periodic sweep and the instant-trigger path so
+    # they don't double-scan within the user's interval window.
+    last_agent_scan_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     # Set the first time the user completes Sign-in-with-Slack on the
     # dashboard. NULL means they were auto-provisioned by a bot interaction

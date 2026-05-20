@@ -50,6 +50,12 @@ from app.tz import format_deadline, safe_zone, to_local
 log = logging.getLogger(__name__)
 settings = get_settings()
 
+# Guards the instant-trigger thread so two rapid messages from the same user
+# don't spawn parallel scans of the same buffer rows. A scan in progress is
+# enough — when it finishes it drains the whole pending buffer anyway.
+_instant_scan_inflight: set[str] = set()
+_instant_scan_lock = threading.Lock()
+
 # In dev/test we don't have real Slack credentials. We still build the app so
 # the routes are wired; Bolt's signature verification will reject anything real
 # until credentials are provided. `token_verification_enabled=False` avoids
@@ -447,12 +453,20 @@ def handle_message_for_notation(event, client, logger):
         # If the same message later gets captured as both NOTATION and
         # AGENT, the (workspace, channel, ts) dedup constraint inside
         # `create_commitment` ensures only one row exists.
+        trigger_instant_scan = False
         if owner.agent_enabled:
             from app.services import agent as agent_svc
             agent_svc.buffer_message(
                 db, user=owner, channel_id=channel_id,
                 message_ts=ts, text=text,
             )
+            # Cheap regex pre-filter: if this message *might* be a
+            # commitment, drain the user's buffer through the real LLM
+            # right now instead of waiting for the next scheduled tick.
+            # False positives here are fine — the LLM is the final
+            # arbiter; the stub just decides whether to spend an API call.
+            if agent_svc.is_likely_candidate(text):
+                trigger_instant_scan = True
 
         compiled = _get_compiled_notations(db, owner.id)
         if not compiled:
@@ -506,6 +520,44 @@ def handle_message_for_notation(event, client, logger):
             pass  # already reacted, or no permission
 
     _refresh_home(client, team_id=team_id, slack_user_id=user_slack_id)
+
+    if trigger_instant_scan:
+        _spawn_instant_scan(client, team_id=team_id, slack_user_id=user_slack_id)
+
+
+def _spawn_instant_scan(client, *, team_id: str, slack_user_id: str) -> None:
+    """Fire-and-forget: drain the user's agent buffer through the LLM now.
+
+    Deduped per user — a second message arriving while a scan is already
+    running just returns, because the in-flight scan will pick the new
+    buffer row up on its single drain.
+    """
+    key = f"{team_id}:{slack_user_id}"
+    with _instant_scan_lock:
+        if key in _instant_scan_inflight:
+            return
+        _instant_scan_inflight.add(key)
+
+    def _do_scan():
+        try:
+            from app.services import agent as agent_svc
+            from app.services.llm import get_provider
+
+            provider = get_provider()
+            with session_scope() as db:
+                owner = _find_user(db, slack_team_id=team_id, slack_user_id=slack_user_id)
+                if not (_is_onboarded(owner) and owner.agent_enabled):
+                    return
+                created = agent_svc.scan_user(db, owner, provider=provider)
+            if created:
+                _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
+        except Exception:
+            log.exception("instant agent scan failed for %s/%s", team_id, slack_user_id)
+        finally:
+            with _instant_scan_lock:
+                _instant_scan_inflight.discard(key)
+
+    threading.Thread(target=_do_scan, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -770,10 +822,8 @@ def _home_agent_blocks(db, owner: User) -> list[dict]:
 
     pending = agent_svc.pending_buffer_count(db, owner)
     state_chip = ":robot_face: *Agent: ON*" if owner.agent_enabled else ":zzz: *Agent: off*"
-    cadence = (
-        f"every {settings.agent_scan_interval_minutes}m"
-        if owner.agent_enabled else "paused"
-    )
+    effective_interval = agent_svc.effective_scan_interval_minutes(owner)
+    cadence = f"every {effective_interval}m" if owner.agent_enabled else "paused"
     floor_pct = (
         owner.agent_confidence_floor_pct
         if owner.agent_confidence_floor_pct is not None
@@ -802,6 +852,33 @@ def _home_agent_blocks(db, owner: User) -> list[dict]:
             "type": "button", "action_id": "agent_scan_now",
             "text": {"type": "plain_text",
                      "text": "Scan recent messages", "emoji": True},
+        })
+        # Interval picker. Likely-commitment messages already trigger an
+        # instant scan via the stub pre-filter, so this only controls how
+        # often we backstop-sweep the buffer for things the stub missed.
+        interval_options = [
+            (1, "Every minute"),
+            (5, "Every 5 min"),
+            (15, "Every 15 min"),
+            (30, "Every 30 min"),
+            (60, "Every hour"),
+        ]
+        opts = [
+            {"text": {"type": "plain_text", "text": label, "emoji": True},
+             "value": str(m)}
+            for m, label in interval_options
+        ]
+        initial = next(
+            (o for o in opts if int(o["value"]) == effective_interval),
+            opts[3],  # fall back to 30m if the user's value isn't preset
+        )
+        action_elements.append({
+            "type": "static_select",
+            "action_id": "agent_set_interval",
+            "placeholder": {"type": "plain_text",
+                            "text": "Scan interval", "emoji": True},
+            "options": opts,
+            "initial_option": initial,
         })
     # Block Kit refuses a button with style=None — drop the key if unset.
     action_elements = [
@@ -1089,6 +1166,33 @@ def handle_agent_toggle(ack, body, client):
         "agent_toggle: user=%s now %s",
         slack_user_id, "ON" if new_state else "off",
     )
+    _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
+
+
+@bolt_app.action("agent_set_interval")
+def handle_agent_set_interval(ack, body, client):
+    """Persist the user's selected scan interval and re-render Home."""
+    ack()
+    team_id = (body.get("team") or {}).get("id") or body.get("team_id")
+    slack_user_id = (body.get("user") or {}).get("id")
+    if not (team_id and slack_user_id):
+        return
+    # static_select returns {actions: [{selected_option: {value: "..."}}]}.
+    selected: Optional[str] = None
+    for a in body.get("actions") or []:
+        if a.get("action_id") == "agent_set_interval":
+            selected = ((a.get("selected_option") or {}).get("value"))
+            break
+    try:
+        minutes = max(1, min(1440, int(selected) if selected else 30))
+    except (TypeError, ValueError):
+        return
+    with session_scope() as db:
+        owner = _find_user(db, slack_team_id=team_id, slack_user_id=slack_user_id)
+        if not _is_onboarded(owner):
+            return
+        owner.agent_scan_interval_minutes = minutes
+    log.info("agent_set_interval: user=%s minutes=%d", slack_user_id, minutes)
     _refresh_home(client, team_id=team_id, slack_user_id=slack_user_id)
 
 

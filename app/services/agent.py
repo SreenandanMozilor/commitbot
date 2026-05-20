@@ -55,8 +55,10 @@ from app.services.llm import (
     ClassifiedCandidate,
     HarvestedMessage,
     LLMProvider,
+    StubProvider,
     get_provider,
 )
+from app.tz import safe_zone
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +177,52 @@ def _effective_floor(user: User) -> float:
     return floor
 
 
+def effective_scan_interval_minutes(user: User) -> int:
+    """Per-user override of the periodic scan cadence, floored at 1m."""
+    s = get_settings()
+    minutes = s.agent_scan_interval_minutes
+    if user.agent_scan_interval_minutes is not None:
+        minutes = user.agent_scan_interval_minutes
+    return max(1, int(minutes))
+
+
+def is_scan_due(user: User, *, now: Optional[datetime] = None) -> bool:
+    """True iff the user's effective interval has elapsed since the last
+    scan. Users who've never been scanned (or whose stamp is missing) are
+    always due — keeps the first sweep prompt instead of waiting an
+    interval after opt-in."""
+    if not user.agent_enabled:
+        return False
+    last = user.last_agent_scan_at
+    if last is None:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return (now - last) >= timedelta(minutes=effective_scan_interval_minutes(user))
+
+
+# Cheap regex-only pre-filter shared across providers. Keep one instance so
+# we don't re-compile the patterns per call.
+_stub_singleton = StubProvider()
+
+
+def is_likely_candidate(text: str) -> bool:
+    """Stub-only pre-classification used by the instant-trigger path.
+
+    Returns True when the cheap regex classifier thinks this message could
+    be a commitment. Tuned to be permissive — the real LLM gets the final
+    say, so a false positive here just means one extra batched LLM call,
+    not a bogus capture.
+    """
+    if not text or not text.strip():
+        return False
+    out = _stub_singleton.classify([HarvestedMessage(id="_probe", text=text)])
+    if not out:
+        return False
+    return bool(out[0].is_commitment)
+
+
 def scan_user(
     db: Session,
     user: User,
@@ -207,6 +255,9 @@ def scan_user(
         .order_by(AgentMessageBuffer.created_at.asc())
         .limit(limit)
     ).scalars().all()
+    # Stamp the scan attempt even on an empty buffer — periodic sweeps
+    # should not re-poll the user every tick when there's nothing to do.
+    user.last_agent_scan_at = datetime.now(timezone.utc)
     if not rows:
         return []
 
@@ -222,7 +273,12 @@ def scan_user(
         user.id, len(rows), provider.name, settings.agent_dry_run,
     )
 
-    verdicts = provider.classify(harvested)
+    # Give the classifier a clock + timezone so it can resolve relative
+    # deadlines ("tomorrow", "by Friday EOD") into concrete ISO datetimes.
+    # Without this anchor the model either returns null or hallucinates a
+    # date that fails the past-cutoff in `_parse_deadline_hint`.
+    user_now = datetime.now(safe_zone(user.tz))
+    verdicts = provider.classify(harvested, now=user_now, tz=user.tz or "UTC")
     by_id: dict[str, ClassifiedCandidate] = {v.message_id: v for v in verdicts}
     floor = _effective_floor(user)
 
@@ -297,7 +353,11 @@ def scan_user(
 
 
 def scan_all(db: Session, *, provider: Optional[LLMProvider] = None) -> dict[str, list[Commitment]]:
-    """Run `scan_user` for every user with the agent enabled.
+    """Run `scan_user` for every user with the agent enabled and a due
+    scan window. Per-user `agent_scan_interval_minutes` (with system
+    default fallback) decides cadence — the scheduler polls every minute
+    but only opt-in users whose interval has elapsed are actually
+    classified.
 
     Returns {user_id: [new_commitments]}. Slack-side side effects (e.g.
     refreshing Home tabs after new captures appear) are the caller's
@@ -307,8 +367,11 @@ def scan_all(db: Session, *, provider: Optional[LLMProvider] = None) -> dict[str
     users = db.execute(
         select(User).where(User.agent_enabled.is_(True))
     ).scalars().all()
+    now = datetime.now(timezone.utc)
     out: dict[str, list[Commitment]] = {}
     for u in users:
+        if not is_scan_due(u, now=now):
+            continue
         try:
             created = scan_user(db, u, provider=provider)
         except Exception:
