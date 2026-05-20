@@ -120,7 +120,14 @@
   {% for p in priorities %}
     <div class="config-row">
       <div class="row-main">
-        <span class="swatch" style="background: {{ p.color }};"></span>
+        {# Render-time `safe_css_color` re-validates against a strict hex
+           whitelist and falls back to gray; defends against any value
+           that slipped past the service layer or pre-existed in the DB.
+           The swatch is decorative — the bolded name beside it already
+           names the priority, so the swatch is aria-hidden. #}
+        <span class="swatch" aria-hidden="true"
+            style="background-color: {{ p.color | safe_css_color }};">
+        </span>
         <strong>{{ p.name }}</strong>
         {% if p.is_system_default %}<span class="badge">Default</span>{% endif %}
       </div>

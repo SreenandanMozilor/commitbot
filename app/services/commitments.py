@@ -44,6 +44,13 @@ from app.models import (
 MAX_TEXT_LEN = 1000
 MAX_NOTATIONS_PER_USER = 5
 
+# Priority-level colors are interpolated directly into a CSS `style`
+# attribute in settings.html. Jinja autoescape doesn't sanitize CSS
+# context, so any unescaped value here becomes a CSS injection vector
+# (e.g. `red; background-image: url(https://attacker/leak.gif)`).
+# Enforce a strict hex-color whitelist at the service boundary.
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
 # Mutation is only allowed on these states. Completed/Archived/Deleted commitments
 # are immutable except via state-transition routes (restore, reopen, archive…).
 # REASSIGNED is included — once Bob has accepted, the commitment is live again
@@ -502,6 +509,11 @@ def create_priority_level(
     name = (name or "").strip()
     if not name:
         raise ValueError("Priority level name is required.")
+    color = (color or "").strip() or "#888888"
+    if not _HEX_COLOR_RE.match(color):
+        raise ValueError(
+            "Color must be a hex value like #aabbcc or #abc."
+        )
     # The system enforces an absolute floor on how frequently a commitment can
     # ping, regardless of how aggressively escalation is configured. Keep this
     # in sync with pings.SYSTEM_MIN_PING_INTERVAL_MINUTES.

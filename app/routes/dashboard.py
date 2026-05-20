@@ -60,6 +60,25 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 
+
+# Defense-in-depth: Jinja autoescape only sanitizes HTML context, not CSS.
+# Any user-controlled value interpolated into a `style="…"` attribute can
+# inject extra CSS declarations after a `;`. We register a render-time
+# filter that re-validates color values against a strict hex whitelist
+# and falls back to a safe default — so even if a malicious row sneaks
+# past the service layer (or arrived from an older codebase), the
+# template never emits an attacker-controlled CSS value.
+import re as _re
+_HEX_COLOR_RE = _re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _safe_css_color(value: object, fallback: str = "#888888") -> str:
+    s = "" if value is None else str(value).strip()
+    return s if _HEX_COLOR_RE.match(s) else fallback
+
+
+templates.env.filters["safe_css_color"] = _safe_css_color
+
 VALID_THEMES = {"auto", "light", "dark"}
 
 
