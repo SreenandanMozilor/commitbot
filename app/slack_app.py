@@ -2087,8 +2087,22 @@ def handle_clearmsgs_confirm(ack, body, client):
 
 
 def _clearmsgs_worker(client: Any, user_id: str, team_id: Optional[str]) -> None:
-    """Background worker — opens the IM, pages through history, deletes
-    every bot-posted message, refreshes the Home view at the end."""
+    """Background worker — opens the IM, paginates the FULL history into a
+    list, then deletes every bot-posted message with a throttle + an
+    explicit rate-limit retry. Refreshes the Home view at the end.
+
+    Why two passes instead of "fetch a page, delete its bot messages,
+    advance the cursor": chat.delete is Slack Tier 3 (~50/min), and a
+    single Home tab session can rack up hundreds of pings. The first
+    50ish deletes succeed, then Slack starts returning 429 ratelimited;
+    if we'd been walking the cursor forward we'd already be past those
+    messages and lose track of them. Collect-then-delete decouples
+    pagination from mutation, so a rate-limited delete just sleeps and
+    retries the same ts.
+    """
+    import time
+    from slack_sdk.errors import SlackApiError
+
     try:
         im = client.conversations_open(users=user_id)
         channel = (im or {}).get("channel", {}).get("id")
@@ -2099,8 +2113,9 @@ def _clearmsgs_worker(client: Any, user_id: str, team_id: Optional[str]) -> None
         log.exception("conversations.open failed in clearmsgs")
         return
 
-    deleted = 0
-    failed = 0
+    # Pass 1: paginate the full DM history and collect bot-message ts's.
+    # Doing this first means later deletes don't disturb the cursor.
+    to_delete: list[str] = []
     cursor: Optional[str] = None
     while True:
         try:
@@ -2114,20 +2129,56 @@ def _clearmsgs_worker(client: Any, user_id: str, team_id: Optional[str]) -> None
             # Only our bot's messages. User-typed messages can't be deleted
             # by us (no permission), and we wouldn't want to anyway.
             is_bot = msg.get("bot_id") or msg.get("subtype") == "bot_message"
-            if not is_bot:
-                continue
-            try:
-                client.chat_delete(channel=channel, ts=msg["ts"])
-                deleted += 1
-            except Exception:
-                # Rate-limit or already-deleted; keep going.
-                failed += 1
+            if is_bot and msg.get("ts"):
+                to_delete.append(msg["ts"])
         cursor = (hist.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
             break
 
+    # Pass 2: delete with throttle + retry. Tier 3 lets us do ~50/min;
+    # a 1.1s gap keeps us comfortably under that. On a 429 we honour
+    # the Retry-After header and try the same ts again instead of
+    # marking it failed (which is what made the button look "stuck"
+    # after the first ~50 messages and forced repeated clicks).
+    deleted = 0
+    failed = 0
+    for ts in to_delete:
+        for attempt in range(5):
+            try:
+                client.chat_delete(channel=channel, ts=ts)
+                deleted += 1
+                break
+            except SlackApiError as e:
+                err = (e.response or {}).get("error")
+                if err == "ratelimited":
+                    retry_after = 30
+                    headers = getattr(e.response, "headers", {}) or {}
+                    try:
+                        retry_after = int(headers.get("Retry-After", retry_after))
+                    except (TypeError, ValueError):
+                        pass
+                    log.info(
+                        "clearmsgs rate-limited; sleeping %ds before retry",
+                        retry_after,
+                    )
+                    time.sleep(max(1, retry_after))
+                    continue
+                # Permanent failure (message_not_found, already deleted,
+                # cant_delete_message). Skip — no point retrying.
+                log.debug("chat_delete %s skipped: %s", ts, err)
+                failed += 1
+                break
+            except Exception:
+                log.exception("chat_delete %s raised unexpectedly", ts)
+                failed += 1
+                break
+        else:
+            failed += 1
+        time.sleep(1.1)
+
     log.info(
-        "clearmsgs: user=%s deleted=%d failed=%d", user_id, deleted, failed,
+        "clearmsgs: user=%s total=%d deleted=%d failed=%d",
+        user_id, len(to_delete), deleted, failed,
     )
     if team_id:
         try:
