@@ -155,6 +155,17 @@ Deadline extraction rules (important):
     "tomorrow" → next calendar day; "tonight" → today ~21:00; "by Friday" →
     next upcoming Friday at 17:00; "end of day" / "EOD" → today 17:00;
     "next week" → next Monday 17:00.
+  - Numeric / ordinal dates count too. Resolve against "Current time":
+      "on 29th" / "on the 29th" / "by the 29th" → the 29th of the CURRENT
+        month at 17:00. If that day has already passed this month, use
+        the 29th of the NEXT month.
+      "on May 29" / "by May 29 at 6pm" → that exact date (current year, or
+        next year if it's already past) at the stated time (default 17:00
+        if none given).
+      "next Friday the 29th" → resolve as a date first; the weekday is a
+        sanity hint, not the source of truth.
+  - Time-of-day overrides the 17:00 default whenever stated: "by 10pm",
+    "at noon", "before 9am" → use the stated time on the resolved date.
   - Emit deadline_hint in the sender's local timezone (also given in the user
     prompt) as a full ISO-8601 string WITH offset, e.g. "2026-05-21T17:00:00+05:30".
   - The deadline MUST be strictly in the future relative to Current time.
