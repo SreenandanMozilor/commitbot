@@ -108,7 +108,7 @@
 
     <article class="commitment" id="row-{{ c.id }}">
       <div class="body">
-        <div class="text">{{ c.text }}</div>
+        <div class="text">{{ c.text | slack_mentions(member_map) }}</div>
         <div class="meta">
           <span class="pill source">{{ c.source.value.replace('_', ' ') }}</span>
 

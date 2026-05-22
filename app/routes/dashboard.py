@@ -47,7 +47,11 @@ from app.models import (
 from app.services import commitments as commit_svc
 from app.services import pings as ping_svc
 from app.services import reassignments as reassign_svc
-from app.slack_app import invalidate_notation_cache, list_workspace_members
+from app.slack_app import (
+    invalidate_notation_cache,
+    list_workspace_members,
+    render_slack_mentions,
+)
 from app.tz import (
     COMMON_TIMEZONES,
     local_input_to_utc,
@@ -78,6 +82,12 @@ def _safe_css_color(value: object, fallback: str = "#888888") -> str:
 
 
 templates.env.filters["safe_css_color"] = _safe_css_color
+# Slack mention rendering: `<@U…>` → `@DisplayName` in the dashboard's HTML.
+# Usage in templates: `{{ c.text | slack_mentions(member_map) }}`.
+# The DB keeps the raw token so future re-parsing (and the Slack-side
+# rendering, which auto-expands the token) still work; this filter only
+# touches the rendered HTML.
+templates.env.filters["slack_mentions"] = render_slack_mentions
 
 VALID_THEMES = {"auto", "light", "dark"}
 
@@ -405,6 +415,16 @@ def dashboard_home(
                 "note": r.note,
             }
 
+    # Workspace member fetch: cached for 5 min via list_workspace_members,
+    # so calling it on every dashboard render is cheap. Used for both the
+    # reassign-target dropdown AND the `slack_mentions` Jinja filter that
+    # rewrites `<@U…>` tokens in commitment text to readable names.
+    from app.slack_app import bolt_app
+    members = list_workspace_members(
+        bolt_app.client, user.workspace.slack_team_id,
+    )
+    member_map = {m["id"]: m["name"] for m in members}
+
     # Reassign-target dropdown: list EVERY active human in the workspace
     # via Slack's users.list (cached). Marking which ones have actually
     # signed in to CommitBot — un-onboarded members appear in the dropdown
@@ -413,10 +433,6 @@ def dashboard_home(
     # than only people they've already collaborated with via CommitBot.
     teammates = []
     if state_enum in (CommitmentState.ACTIVE, CommitmentState.REASSIGNED):
-        from app.slack_app import bolt_app
-        members = list_workspace_members(
-            bolt_app.client, user.workspace.slack_team_id,
-        )
         # Which of them have a User row with signed_in_at set?
         onboarded_ids = {
             r[0] for r in db.execute(
@@ -568,6 +584,7 @@ def dashboard_home(
             "incoming_reassignments": incoming_view,
             "outgoing_by_commitment": outgoing_by_commitment,
             "teammates": teammates,
+            "member_map": member_map,
             "recipient_names": recipient_names,
             "is_handed_off_view": is_handed_off_view,
             "current_owner_names": current_owner_names,

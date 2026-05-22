@@ -77,6 +77,26 @@ slack_request_handler = SlackRequestHandler(bolt_app)
 # auto-substitutes when a real user is tab-completed.
 MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]+)?>")
 
+
+def render_slack_mentions(text: str, member_map: dict[str, str]) -> str:
+    """Replace `<@U…>` tokens in `text` with `@DisplayName`.
+
+    Slack auto-renders these tokens to display names inside Slack itself,
+    but the dashboard would otherwise show the raw token (e.g.
+    "Hi <@U0B3C5LLYTH> I will submit ..."). `member_map` is a `{id → name}`
+    dict (typically from `list_workspace_members`); IDs not present fall
+    back to `@U…` so we at least drop the ugly angle brackets.
+    """
+    if not text or "<@" not in text:
+        return text or ""
+
+    def _swap(m: re.Match) -> str:
+        uid = m.group(1)
+        name = member_map.get(uid) if member_map else None
+        return f"@{name}" if name else f"@{uid}"
+
+    return MENTION_RE.sub(_swap, text)
+
 # Plain text mention like `@sree` or `[@sree]`. Skips emails by requiring the
 # `@` to be preceded by a non-word character (or start-of-string), and the name
 # itself must start with a letter to avoid `@1`/`@-` noise.
