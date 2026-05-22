@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>CommitBot — Demo</title>
+<script>
+  // Theme bootstrap (runs before paint to prevent flash).
+  (function () {
+    var KEY = 'docs-theme';
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) {}
+    var initial = saved
+      || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark' : 'light');
+    document.documentElement.dataset.theme = initial;
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;600&family=Geist:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:           #fbfaf7;
+    --bg-elevated:  #ffffff;
+    --bg-tinted:    #f7f5ef;
+    --bg-sunken:    #f3f1ec;
+    --ink:          #15151a;
+    --ink-soft:     #3a3a44;
+    --ink-muted:    #6b6b75;
+    --ink-faint:    #9a9aa0;
+    --rule:         #e6e3dc;
+    --rule-faint:   #efece4;
+    --accent:       #2454ff;
+    --accent-soft:  #e8edff;
+    --accent-ink:   #0a2a99;
+    --warning:      #9c5a00;
+    --warning-soft: #fbeed3;
+    --success:      #2c7a4a;
+    --success-soft: #e4f1ea;
+    --danger:       #b8331f;
+    --danger-soft:  #fbe3df;
+    --shadow:       0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  [data-theme="dark"] {
+    --bg:           #14141a;
+    --bg-elevated:  #1d1d24;
+    --bg-tinted:    #1f1f27;
+    --bg-sunken:    #18181f;
+    --ink:          #ebebef;
+    --ink-soft:     #c5c5cc;
+    --ink-muted:    #8e8e98;
+    --ink-faint:    #6c6c76;
+    --rule:         #2c2c34;
+    --rule-faint:   #222229;
+    --accent:       #6e90ff;
+    --accent-soft:  #1c2545;
+    --accent-ink:   #9bb2ff;
+    --warning:      #d99440;
+    --warning-soft: #2c2114;
+    --success:      #5cb077;
+    --success-soft: #172a1f;
+    --danger:       #e2675a;
+    --danger-soft:  #2e1714;
+    --shadow:       0 1px 3px rgba(0,0,0,0.5);
+  }
+
+  /* Theme toggle — fixed top-right, shared with all docs/ pages */
+  .theme-toggle {
+    position: fixed;
+    top: 16px; right: 16px;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--rule);
+    background: var(--bg-elevated);
+    color: var(--ink);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; line-height: 1;
+    z-index: 100;
+    transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+    box-shadow: var(--shadow);
+    font-family: 'Geist', system-ui, -apple-system, sans-serif;
+  }
+  .theme-toggle:hover {
+    transform: scale(1.06);
+    border-color: var(--accent);
+  }
+  .theme-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  @media print {
+    .theme-toggle { display: none; }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Geist', system-ui, -apple-system, sans-serif;
+    font-size: 15.5px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 56px 32px 96px;
+  }
+
+  /* TITLE */
+  header.title {
+    margin-bottom: 48px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header.title h1 {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-size: 64px;
+    font-style: italic;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    margin: 0 0 14px;
+  }
+  header.title h1 .dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--accent);
+    margin: 0 6px 8px;
+    vertical-align: middle;
+  }
+  header.title .tagline {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-size: 22px;
+    color: var(--ink-muted);
+    margin: 0 0 6px;
+  }
+  header.title .meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-faint);
+    margin-top: 14px;
+  }
+
+  /* SECTIONS */
+  section {
+    margin: 72px 0;
+  }
+  section:first-of-type { margin-top: 0; }
+
+  h2.section-heading {
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: 38px;
+    letter-spacing: -0.01em;
+    line-height: 1.05;
+    margin: 0 0 6px;
+  }
+  .section-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+    margin: 0 0 28px;
+  }
+
+  h3 {
+    font-family: 'Geist', sans-serif;
+    font-weight: 600;
+    font-size: 17px;
+    margin: 32px 0 10px;
+    color: var(--ink);
+  }
+
+  p { margin: 0 0 14px; max-width: 68ch; }
+  p.lede {
+    font-size: 17px;
+    color: var(--ink-soft);
+    max-width: 60ch;
+    margin-bottom: 22px;
+  }
+
+  /* DIAGRAM BOX */
+  pre.diagram {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    background: var(--bg-elevated);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 24px;
+    margin: 24px 0;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  /* TABLES */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 18px 0 24px;
+    font-size: 14.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  th {
+    font-weight: 600;
+    color: var(--ink-soft);
+    background: var(--bg-tinted);
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  td code, p code, li code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9em;
+    background: var(--bg-sunken);
+    padding: 1px 6px;
+    border-radius: 3px;
+  }
+  td:first-child { white-space: nowrap; }
+
+  /* LISTS */
+  ul, ol { padding-left: 22px; max-width: 68ch; }
+  ul li, ol li { margin: 6px 0; }
+
+  /* CALLOUT */
+  .callout {
+    background: var(--accent-soft);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin: 20px 0;
+    color: var(--accent-ink);
+    font-size: 14.5px;
+  }
+  .callout strong { color: var(--accent-ink); }
+
+  /* QUOTE BLOCKS */
+  blockquote {
+    margin: 24px 0;
+    padding: 14px 22px;
+    border-left: 3px solid var(--rule);
+    color: var(--ink-soft);
+    font-family: 'Instrument Serif', Georgia, serif;
+    font-style: italic;
+    font-size: 18px;
+  }
+
+  /* CODE INLINE */
+  strong { color: var(--ink); }
+
+  /* SUB-NOTE under a diagram */
+  .diagram-note {
+    font-size: 13px;
+    color: var(--ink-muted);
+    margin: -10px 0 24px;
+    font-style: italic;
+  }
+
+  /* TWO-COLUMN GRID FOR USER FLOWS */
+  .flow-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  @media (min-width: 800px) {
+    .flow-grid { grid-template-columns: 1fr; }
+  }
+
+  /* PRINT */
+  @media print {
+    .wrap { padding: 24px; max-width: none; }
+    section { page-break-inside: avoid; }
+    pre.diagram { page-break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">☾</button>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    var KEY = 'docs-theme';
+    var root = document.documentElement;
+    var btn = document.querySelector('.theme-toggle');
+    if (!btn) return;
+    function paint(t) {
+      root.dataset.theme = t;
+      btn.textContent = t === 'dark' ? '☀' : '☾';
+      btn.setAttribute('aria-label',
+        'Switch to ' + (t === 'dark' ? 'light' : 'dark') + ' mode');
+      btn.setAttribute('aria-pressed', t === 'dark' ? 'true' : 'false');
+    }
+    paint(root.dataset.theme || 'light');
+    btn.addEventListener('click', function () {
+      var next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      paint(next);
+      try { localStorage.setItem(KEY, next); } catch (e) {}
+    });
+  });
+</script>
+
+<div class="wrap">
+
+<header class="title">
+  <h1>commit<span class="dot"></span>bot</h1>
+  <p class="tagline">"I said I'd do that and forgot."</p>
+  <p class="meta">Capstone demo · MVP · May 2026</p>
+</header>
+
+<!-- ========================================================= -->
+<!-- 1. PROBLEM STATEMENT                                       -->
+<!-- ========================================================= -->
+<section>
+  <h2 class="section-heading">Problem statement.</h2>
+  <p class="section-meta">What we set out to solve</p>
+
+  <p class="lede">
+    Three interviews shaped this project — an APM, a UX designer, and a
+    new support hire. They converged on the same finding.
+  </p>
+
+  <blockquote>
+    "I'll send the report by Friday." Said, forgotten, missed.
+  </blockquote>
+
+  <h3>The three observations</h3>
+  <ul>
+    <li>
+      <strong>Workarounds exist, but none of them scale.</strong>
+      Sticky notes work for one person until you have ten of them on
+      your desk. Personal Slack channels capture commitments but no one
+      else sees them. Notes apps don't ping the next person in a
+      dependency chain. Slack stars and saved-for-later are invisible
+      to teammates. Every interviewee had a patched-up system; every
+      one of them broke under more load.
+    </li>
+    <li>
+      <strong>The hardest version of the problem isn't personal memory —
+      it's cross-person visibility.</strong>
+      When you tell a teammate "I'll send the report by Friday" and
+      forget, the cost isn't just your own embarrassment; it's that
+      the other person has no record either. They're stuck remembering
+      what they're waiting on, from whom, and when to nudge.
+    </li>
+    <li>
+      <strong>People want capture to be ambient.</strong>
+      Every interviewee said some version of <em>"I don't want to
+      open a new app to log this."</em> The capture mechanism has to
+      live inside the place where the commitment is made —
+      overwhelmingly, Slack.
+    </li>
+  </ul>
+
+  <div class="callout">
+    <strong>CommitBot's bet:</strong> make commitment-tracking ambient.
+    Captured where you already are, surfaced to the right people,
+    reminded without you having to babysit the reminder system.
+  </div>
+</section>
+
+<!-- ========================================================= -->
+<!-- 2. SYSTEM ARCHITECTURE                                     -->
+<!-- ========================================================= -->
+<section>
+  <h2 class="section-heading">System architecture.</h2>
+  <p class="section-meta">One process, three layers</p>
+
+  <p>
+    The whole system runs as a <strong>single Python process</strong>.
+    One <code>uvicorn</code> invocation handles HTTP from the
+    browser, webhooks from Slack, and the background scheduler — no
+    separate web / bot / worker services to deploy.
+  </p>
+
+<pre class="diagram">                              ┌──────────────────────────────────┐
+                              │             Slack                 │
+                              │  slash commands · events ·        │
+                              │  interactivity · OAuth            │
+                              └────────────────┬─────────────────┘
+                                               │ HTTPS
+                                               ▼
+   ┌──────────────┐               ┌────────────────────────────────────┐
+   │   Browser    │ ─── HTTP ───► │   CommitBot (single Python proc)   │
+   │              │     HTMX      │                                    │
+   │ Sign in with │               │   ┌──────────────────────────────┐ │
+   │ Slack →      │               │   │ FastAPI (uvicorn)            │ │
+   │ dashboard    │               │   │  /slack/events  → slack-bolt │ │
+   └──────────────┘               │   │  /              → dashboard  │ │
+                                  │   │  /auth/slack/*  → OAuth       │ │
+                                  │   └──────────────┬───────────────┘ │
+                                  │                  │                  │
+                                  │                  ▼                  │
+                                  │   ┌──────────────────────────────┐ │
+                                  │   │ Services (business rules)    │ │
+                                  │   │  commitments.py · pings.py · │ │
+                                  │   │  reassignments.py · tz.py    │ │
+                                  │   └──────────────┬───────────────┘ │
+                                  │                  │                  │
+                                  │                  ▼                  │
+                                  │   ┌──────────────────────────────┐ │
+                                  │   │ Models  (SQLAlchemy ORM)     │ │
+                                  │   └──────────────┬───────────────┘ │
+                                  │                  ▼                  │
+                                  │   ┌──────────────────────────────┐ │
+                                  │   │ SQLite — single file          │ │
+                                  │   └──────────────────────────────┘ │
+                                  │                                    │
+                                  │   ┌──────────────────────────────┐ │
+                                  │   │ APScheduler (5 jobs,         │ │
+                                  │   │  same process)               │ │
+                                  │   │  • process_due_pings  (60s) │ │
+                                  │   │  • auto_resume_on_hold (5m) │ │
+                                  │   │  • expire_reassignments (5m)│ │
+                                  │   │  • purge_bin           (1h) │ │
+                                  │   │  • auto_delete_completed(1h)│ │
+                                  │   └──────────────────────────────┘ │
+                                  └────────────────────────────────────┘
+</pre>
+
+  <h3>The three-layer rule</h3>
+  <p>
+    Every piece of code lives in exactly one layer. A rule like
+    <em>"completing a commitment computes its outcome, bumps a version
+    number, writes an edit-log row"</em> exists in <strong>one
+    function</strong> (<code>commit_svc.mark_done</code>). The Slack
+    Done button and the dashboard Done button both call that function
+    — no duplication, no drift.
+  </p>
+
+  <table>
+    <tr>
+      <th>Layer</th>
+      <th>Files</th>
+      <th>Job</th>
+    </tr>
+    <tr>
+      <td><strong>Entry points</strong></td>
+      <td><code>slack_app.py</code>, <code>routes/*</code></td>
+      <td>Parse the request, call a service, render a response.
+          <em>No business logic.</em></td>
+    </tr>
+    <tr>
+      <td><strong>Services</strong></td>
+      <td><code>services/commitments.py</code>,
+          <code>services/pings.py</code>,
+          <code>services/reassignments.py</code></td>
+      <td>Enforce every rule about what can happen to a commitment.
+          <em>No HTTP, no Slack.</em></td>
+    </tr>
+    <tr>
+      <td><strong>Models</strong></td>
+      <td><code>models.py</code></td>
+      <td>Pure SQLAlchemy declarations. <em>No logic.</em></td>
+    </tr>
+  </table>
+</section>
+
+<!-- ========================================================= -->
+<!-- 3. TOOLS AND TECH STACK                                    -->
+<!-- ========================================================= -->
+<section>
+  <h2 class="section-heading">Tech stack.</h2>
+  <p class="section-meta">Every choice with its rationale</p>
+
+  <p class="lede">
+    The connecting theme: <strong>boring tech, picked deliberately</strong>.
+    Every choice is the conventional one for its job.
+  </p>
+
+  <table>
+    <tr>
+      <th>Layer</th>
+      <th>Choice</th>
+      <th>Why</th>
+    </tr>
+    <tr>
+      <td>Language</td>
+      <td><strong>Python 3.13</strong></td>
+      <td>Asked for in the brief. 3.14 has issues with pydantic-core's Rust bindings, so 3.13 is the floor.</td>
+    </tr>
+    <tr>
+      <td>Web framework</td>
+      <td><strong>FastAPI</strong></td>
+      <td>Async-ready. Handles Slack webhooks (which demand fast 3-second acks) and dashboard HTML routes in one app. Dependency injection eats auth + DB-session boilerplate.</td>
+    </tr>
+    <tr>
+      <td>Slack SDK</td>
+      <td><strong>slack-bolt</strong></td>
+      <td>Official SDK. Handles request-signature verification, the 3-second-ack rule, retries, lazy listeners.</td>
+    </tr>
+    <tr>
+      <td>ORM</td>
+      <td><strong>SQLAlchemy 2.0</strong></td>
+      <td>Typed ORM. Editors autocomplete fields and catch type mistakes before runtime.</td>
+    </tr>
+    <tr>
+      <td>Database</td>
+      <td><strong>SQLite</strong> (one file)</td>
+      <td>Zero setup. Trivial swap to Postgres later — change one env var. Single-file means easy backup and easy reset.</td>
+    </tr>
+    <tr>
+      <td>Scheduler</td>
+      <td><strong>APScheduler</strong> (in-process)</td>
+      <td>No separate worker, no Redis, no message broker. Five recurring jobs run in the same Python process via a thread pool.</td>
+    </tr>
+    <tr>
+      <td>HTML templates</td>
+      <td><strong>Jinja2 + HTMX</strong></td>
+      <td>Server-rendered HTML with surgical row swaps. No SPA, no JS build step, no <code>node_modules</code>. Page loads are fast, the codebase is easy to debug.</td>
+    </tr>
+    <tr>
+      <td>Sessions</td>
+      <td><strong>itsdangerous</strong></td>
+      <td>Signs the session cookie. Same library Flask uses for its sessions. <code>SameSite=Lax</code> + <code>Secure</code> in production.</td>
+    </tr>
+    <tr>
+      <td>OAuth</td>
+      <td><strong>Sign in with Slack</strong> (OpenID Connect)</td>
+      <td>Real auth, not a <code>?user_id=</code> query param. State token verified with <code>secrets.compare_digest</code>, open-redirect guard on the <code>next</code> URL.</td>
+    </tr>
+    <tr>
+      <td>Migrations</td>
+      <td><strong>Hand-written, idempotent</strong></td>
+      <td>SQLite's <code>ALTER TABLE</code> is permissive enough. <code>db.py:_apply_lightweight_migrations</code> runs on every boot; safe to re-run.</td>
+    </tr>
+    <tr>
+      <td>Tests</td>
+      <td><strong>pytest</strong></td>
+      <td>109 tests, ~3 seconds. Each fixture builds a fresh in-memory SQLite — full isolation per test.</td>
+    </tr>
+  </table>
+</section>
+
+<!-- ========================================================= -->
+<!-- 4. COMMITMENT LIFECYCLE                                    -->
+<!-- ========================================================= -->
+<section>
+  <h2 class="section-heading">Commitment lifecycle.</h2>
+  <p class="section-meta">The state machine, plus outcomes</p>
+
+  <p>
+    Every commitment lives in one of six states. Transitions are owned
+    by the service layer and always write an audit-log row.
+  </p>
+
+<pre class="diagram">                          ┌── put_on_hold ──► ON_HOLD ── resume ──┐
+                          │                      ▲                │
+                          │                      │ auto-resume    │
+                          │                      │  (resume_at OR │
+                          │                      │   deadline ≤ X)│
+                          │                                       │
+   created ──►   ACTIVE  ─┤                                       ▼
+                          │                                  prior_state
+                          │  request_reassignment                  │
+                          ├──► ON_HOLD (reassignment limbo) ──┐    │
+                          │                                   │    │
+                          │       ┌── accept ──► REASSIGNED ◄─┤    │
+                          │       ├── decline ─────────────────┤    │
+                          │       ├── cancel  ─────────────────┤    │
+                          │       └── expire 24h ──────────────┘    │
+                          │                                         │
+                          │  mark_done                              │
+                          ├─────────────────────────────► COMPLETE  │
+                          │                                  │      │
+                          │  soft_delete                     │      │
+                          ├─────────────────────────────► DELETED   │
+                          │                                  │      │
+                          │                                  └─48h─►(purged)
+                          │
+                          │  archive (from COMPLETE or DELETED)
+                          └────────────────────────────► ARCHIVED
+
+   Every terminal transition (COMPLETE / ARCHIVED / DELETED) stamps
+   an OUTCOME:
+      completed_at AND on time?  →  SUCCESS
+      otherwise                  →  FAILED
+</pre>
+
+  <h3>States in plain language</h3>
+  <table>
+    <tr><th>State</th><th>What it means</th><th>Pings?</th><th>Editable?</th></tr>
+    <tr>
+      <td><strong>ACTIVE</strong></td>
+      <td>You're working on it.</td>
+      <td>Yes</td><td>Yes</td>
+    </tr>
+    <tr>
+      <td><strong>ON_HOLD</strong></td>
+      <td>Paused. Either you snoozed it, OR a reassignment is awaiting response.</td>
+      <td>No</td>
+      <td>Yes (unless awaiting reassignment)</td>
+    </tr>
+    <tr>
+      <td><strong>REASSIGNED</strong></td>
+      <td>Handed to you by a teammate; you accepted. Functionally like ACTIVE but tagged so the chain is traceable.</td>
+      <td>Yes</td><td>Yes</td>
+    </tr>
+    <tr>
+      <td><strong>COMPLETE</strong></td>
+      <td>You finished it.</td>
+      <td>No</td><td>No</td>
+    </tr>
+    <tr>
+      <td><strong>ARCHIVED</strong></td>
+      <td>Completed and filed away for keeps.</td>
+      <td>No</td><td>No</td>
+    </tr>
+    <tr>
+      <td><strong>DELETED</strong></td>
+      <td>In the 48-hour bin. Manual <em>Purge</em> button hard-deletes immediately; otherwise the scheduler does so at 48h.</td>
+      <td>No</td><td>No</td>
+    </tr>
+  </table>
+
+  <h3>Outcome — orthogonal to state</h3>
+  <p>
+    A commitment that ends up in any terminal state (COMPLETE / ARCHIVED
+    / DELETED) is stamped with one of two outcomes:
+  </p>
+  <ul>
+    <li>
+      <strong>SUCCESS</strong> — <code>completed_at</code> is set AND
+      it's at-or-before the deadline (or there was no deadline).
+    </li>
+    <li>
+      <strong>FAILED</strong> — anything else: never completed, or
+      completed late.
+    </li>
+  </ul>
+  <p>
+    The rule lives in <strong>one place</strong> —
+    <code>compute_outcome</code> in <code>services/commitments.py</code>
+    — and every terminal transition calls it. Reopen or restore-to-active
+    clears the outcome; restore-to-complete preserves it.
+  </p>
+
+  <div class="callout">
+    <strong>The <code>prior_state</code> trick:</strong>
+    when a commitment moves into ON_HOLD (snooze or reassignment limbo),
+    we stash where it came from. On resume / decline / cancel / expire,
+    we restore to that state — so a REASSIGNED commitment that gets
+    snoozed comes back as REASSIGNED, not ACTIVE.
+  </div>
+</section>
+
+<!-- ========================================================= -->
+<!-- 5. USER FLOWS                                              -->
+<!-- ========================================================= -->
+<section>
+  <h2 class="section-heading">User flows.</h2>
+  <p class="section-meta">Three annotated journeys</p>
+
+  <div class="flow-grid">
+
+    <!-- FLOW A: /commit -->
+    <div>
+      <h3>A. Creating a commitment via <code>/commit</code></h3>
+<pre class="diagram">You type:  /commit I'll send the report by Friday   in #general
+
+  1. Slack POSTs to /slack/events
+  2. slack-bolt routes to handle_commit_slash
+  3. handler calls ack() within 3s (Slack's deadline)
+  4. onboarding gate: _find_user + signed_in_at check
+        └─ if not onboarded: ephemeral nudge, return
+  5. handler posts the public channel message
+        "@you committed: I'll send the report by Friday"
+  6. handler calls commit_svc.create_commitment
+        ├─ dedup check (workspace, channel, message_ts)
+        ├─ default-priority resolution
+        ├─ CommitmentRecipient rows for any @mentions
+        └─ INSERT INTO commitments
+        ↑ if anything fails, the channel post is deleted
+          via chat.delete to avoid an orphan claim
+  7. ping_svc.schedule_initial_ping
+        └─ INSERT INTO pings (scheduled_for = now + base)
+  8. threaded reply with a Done ✓ button
+        (only the owner can press it — _is_commitment_owner)
+  9. _refresh_home pushes updated Slack home view
+</pre>
+      <p class="diagram-note">
+        Total round-trip: ~150 milliseconds.
+      </p>
+    </div>
+
+    <!-- FLOW B: Reassignment -->
+    <div>
+      <h3>B. The reassignment flow (Alice → Bob)</h3>
+<pre class="diagram">  ALICE                                          BOB
+  ─────                                          ─────
+  clicks Reassign on a commitment
+    └─ modal opens: users_select + optional note
+
+  commitment → ON_HOLD
+    ├─ prior_state = ACTIVE (stashed)
+    ├─ on_hold_resume_at = NULL
+    ├─ pending pings deleted
+    └─ Reassignment row: status = PENDING,
+       expires_at = now + 24h
+
+                                ──DM──►   "@alice wants to hand off
+                                          'send the report' to you"
+                                          [Accept] [Decline]
+
+                                              Bob clicks Accept ──┘
+                                              │
+                                              ▼
+                                ◄──DM──   Alice notified
+                                              Reassignment.status = ACCEPTED
+                                              Commitment.user_id   = Bob
+                                              Commitment.state     = REASSIGNED
+                                              Commitment.priority  = Bob's default
+                                              fresh ping queued for Bob
+
+  Alice's Reassigned tab          Bob's Active tab:
+   shows the row, read-only,        shows the row, full action
+   pill: "→ now with @Bob"           buttons, gets pings on his
+                                     cadence
+
+  ── alternatives ──
+
+   Bob clicks Decline       → status=DECLINED, commitment → ACTIVE (Alice)
+   Alice clicks Cancel      → status=CANCELLED, commitment → ACTIVE, Bob's DM retired
+   24h with no response     → scheduler's expire_reassignments job:
+                              status=EXPIRED, both parties DM'd
+</pre>
+      <p class="diagram-note">
+        Key invariants enforced server-side: only owners can request /
+        cancel; only the named target can accept / decline; targets
+        must be onboarded; no edits allowed while pending; at most one
+        pending reassignment per commitment.
+      </p>
+    </div>
+
+    <!-- FLOW C: Ping loop -->
+    <div>
+      <h3>C. The ping loop</h3>
+<pre class="diagram">TIME 0
+  /commit just created the commitment. schedule_initial_ping ran.
+  → Ping row created with scheduled_for = now + base_interval
+
+EVERY 60 SECONDS
+  Scheduler tick → process_due_pings:
+    1. SELECT * FROM pings WHERE sent_at IS NULL AND scheduled_for <= now
+    2. For each:
+       a. If commitment state ∉ (ACTIVE, REASSIGNED): mark consumed, skip
+       b. If user.global_pause:
+            mark consumed, queue next ping (keep queue primed), skip
+       c. deliver_ping → either log (dry run) or send_ping_dm
+       d. db.flush() so the next-ping count query sees the just-sent one
+       e. compute_next_ping_at(...) returns the time for the next ping
+       f. INSERT INTO pings with scheduled_for = that time
+
+INSIDE ESCALATION WINDOW  (now ≥ deadline − escalation_hours)
+  Each ping's interval shrinks:
+     interval = base / (rate^stages_so_far)   floored at max_ping_frequency
+
+TIME D (deadline) and beyond
+  Overdue mode — pings continue at floor cadence indefinitely
+  unless the user has pressed Stop escalation (then base cadence forever).
+</pre>
+      <p class="diagram-note">
+        Example with <code>base=240m, rate=2, floor=30m</code>: pings fire at
+        240, 120, 60, 30, 30, 30… as stages accumulate inside the
+        escalation window.
+      </p>
+    </div>
+
+    <!-- FLOW D: Sign in -->
+    <div>
+      <h3>D. Sign in with Slack</h3>
+<pre class="diagram">  1. User visits /  with no session
+  2. required_user dependency raises LoginRequired
+  3. Custom exception handler in main.py:
+       - HTMX request? → 401 + HX-Redirect header
+       - Otherwise   → 303 redirect to /auth/slack/login?next=…
+  4. /auth/slack/login generates a 32-byte state token, stores it
+     in the session, redirects to Slack's authorize endpoint
+     (scope = openid profile email)
+  5. User clicks Approve on Slack's page
+  6. Slack → /auth/slack/callback?code=…&state=…
+  7. State verified with secrets.compare_digest (timing-safe)
+  8. POST openid.connect.token  → access_token
+  9. GET  openid.connect.userInfo (Bearer access_token)
+       → slack_user_id, slack_team_id, email, display_name
+ 10. Find-or-create the User row. Stamp signed_in_at = now.
+ 11. Sign session cookie (itsdangerous, 30 days, SameSite=Lax).
+ 12. views.publish fresh App Home so the user sees their
+     commitments instantly when they switch back to Slack.
+ 13. 303 redirect to the saved next URL (defaults to /).
+</pre>
+      <p class="diagram-note">
+        <code>signed_in_at</code> is the proof of onboarding —
+        the Slack capture paths (<code>/commit</code>, message
+        shortcut) refuse to log commitments for users without it.
+      </p>
+    </div>
+
+  </div>
+</section>
+
+<footer style="margin-top:80px; padding-top:24px; border-top:1px solid var(--rule); color:var(--ink-faint); font-family:'JetBrains Mono', monospace; font-size:11px; text-transform:uppercase; letter-spacing:0.08em;">
+  CommitBot · MVP · 109 tests · github.com/SreenandanMozilor/commitbot
+</footer>
+
+</div>
+</body>
+</html>

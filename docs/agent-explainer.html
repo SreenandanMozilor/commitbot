@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>CommitBot Agent — how it works</title>
+<script>
+  // Theme bootstrap (runs before paint to prevent flash). Reads
+  // localStorage first, then prefers-color-scheme, then defaults light.
+  (function () {
+    var KEY = 'docs-theme';
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) {}
+    var initial = saved
+      || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark' : 'light');
+    document.documentElement.dataset.theme = initial;
+  })();
+</script>
+<style>
+  :root {
+    --ink:        #1a1a1a;
+    --ink-mute:   #5b5b66;
+    --ink-faint:  #8a8a96;
+    --bg:         #ffffff;
+    --bg-soft:    #f6f7f9;
+    --bg-code:    #f1f2f4;
+    --bg-accent:  #eef4ff;
+    --bg-warn:    #fff7ec;
+    --bg-ok:      #ecf8f0;
+    --border:     #e5e7eb;
+    --border-mid: #cbd1d9;
+    --accent:     #2563eb;
+    --accent-d:   #1d4ed8;
+    --warn:       #b8770b;
+    --ok:         #2e7d44;
+    --danger:     #c0392b;
+    --shadow:     0 1px 3px rgba(0,0,0,0.06);
+  }
+
+  [data-theme="dark"] {
+    --ink:        #e8e9ec;
+    --ink-mute:   #a6a8b0;
+    --ink-faint:  #7a7c85;
+    --bg:         #0f1115;
+    --bg-soft:    #181b22;
+    --bg-code:    #1c1f27;
+    --bg-accent:  #1a2438;
+    --bg-warn:    #2a2014;
+    --bg-ok:      #15281c;
+    --border:     #2a2d36;
+    --border-mid: #3a3e49;
+    --accent:     #5b86f0;
+    --accent-d:   #7da0f5;
+    --warn:       #d99440;
+    --ok:         #5cb077;
+    --danger:     #e26553;
+    --shadow:     0 1px 3px rgba(0,0,0,0.4);
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 920px; margin: 0 auto; padding: 48px 24px 96px; }
+
+  header.hero {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 32px; margin-bottom: 40px;
+  }
+  header.hero .eyebrow {
+    color: var(--ink-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 12px; font-weight: 600;
+    margin-bottom: 10px;
+  }
+  header.hero h1 {
+    font-size: 38px; line-height: 1.15; margin: 0 0 12px;
+    letter-spacing: -0.02em;
+  }
+  header.hero .lede {
+    font-size: 17px; color: var(--ink-mute); margin: 0;
+    max-width: 64ch;
+  }
+
+  nav.toc {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 0 0 40px;
+    font-size: 14px;
+  }
+  nav.toc strong {
+    display: block; margin-bottom: 8px;
+    font-size: 11px; text-transform: uppercase;
+    color: var(--ink-faint); letter-spacing: 0.08em;
+  }
+  nav.toc ol {
+    margin: 0; padding-left: 22px;
+    columns: 2; column-gap: 32px;
+  }
+  nav.toc li { margin: 4px 0; break-inside: avoid; }
+  nav.toc a { color: var(--ink); text-decoration: none; }
+  nav.toc a:hover { color: var(--accent); }
+
+  h2 {
+    font-size: 24px; line-height: 1.25;
+    margin: 56px 0 16px;
+    letter-spacing: -0.01em;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+  h2 .num {
+    display: inline-block; min-width: 30px;
+    color: var(--ink-faint); font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  h3 { font-size: 17px; margin: 28px 0 10px; }
+  p  { margin: 10px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 4px 0; }
+
+  code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--bg-code);
+    padding: 1px 6px; border-radius: 4px;
+  }
+  pre {
+    background: #0f1623; color: #e9ecf1;
+    padding: 14px 16px; border-radius: 8px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.55;
+    overflow-x: auto;
+    margin: 14px 0;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  .tok-key  { color: #9cdcfe; }
+  .tok-str  { color: #ce9178; }
+  .tok-num  { color: #b5cea8; }
+  .tok-com  { color: #6a9955; font-style: italic; }
+  .tok-fn   { color: #dcdcaa; }
+  .tok-kw   { color: #c586c0; }
+
+  /* Callouts */
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--bg-accent);
+    padding: 12px 16px; border-radius: 0 8px 8px 0;
+    margin: 16px 0;
+  }
+  .callout.warn { border-color: var(--warn); background: var(--bg-warn); }
+  .callout.ok   { border-color: var(--ok);   background: var(--bg-ok);   }
+  .callout .label {
+    font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--accent); margin-bottom: 4px;
+  }
+  .callout.warn .label { color: var(--warn); }
+  .callout.ok   .label { color: var(--ok); }
+  .callout p:first-of-type { margin-top: 0; }
+  .callout p:last-of-type  { margin-bottom: 0; }
+
+  /* Pipeline diagram */
+  .pipeline {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+    margin: 22px 0 8px;
+    align-items: stretch;
+  }
+  .pipeline .step {
+    background: var(--bg-soft);
+    border: 1px solid var(--border-mid);
+    border-radius: 8px;
+    padding: 10px 8px;
+    text-align: center;
+    font-size: 12.5px;
+    position: relative;
+    display: flex; flex-direction: column;
+    justify-content: center;
+    min-height: 70px;
+  }
+  .pipeline .step .icon { font-size: 18px; margin-bottom: 4px; }
+  .pipeline .step .lbl { font-weight: 600; }
+  .pipeline .step .sub {
+    color: var(--ink-faint); font-size: 11px; margin-top: 2px;
+  }
+  .pipeline .step::after {
+    content: "→";
+    position: absolute;
+    right: -10px; top: 50%; transform: translateY(-50%);
+    color: var(--ink-faint); font-weight: 700;
+    z-index: 1;
+  }
+  .pipeline .step:last-child::after { content: ""; }
+
+  /* Detailed flow (vertical) */
+  .flow {
+    border-left: 2px solid var(--border-mid);
+    margin: 20px 0 24px 8px;
+    padding-left: 22px;
+  }
+  .flow .node {
+    position: relative;
+    padding: 8px 0 16px;
+  }
+  .flow .node::before {
+    content: "";
+    position: absolute;
+    left: -29px; top: 14px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--accent);
+  }
+  .flow .node .title {
+    font-weight: 600; margin-bottom: 2px;
+  }
+  .flow .node .where {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px; color: var(--ink-faint);
+  }
+  .flow .node .body { margin-top: 4px; }
+
+  /* Tables */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th {
+    font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    color: var(--ink-faint);
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--border-mid);
+  }
+  td code { font-size: 12.5px; }
+
+  /* Two-column grid */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin: 16px 0;
+  }
+  .card {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card h4 { margin: 0 0 6px; font-size: 14px; }
+  .card p  { margin: 4px 0; font-size: 14px; color: var(--ink-mute); }
+
+  /* FAQ */
+  details.faq {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 8px 0;
+    background: var(--bg);
+  }
+  details.faq summary {
+    font-weight: 600; cursor: pointer; list-style: none;
+    padding: 4px 0;
+  }
+  details.faq summary::-webkit-details-marker { display: none; }
+  details.faq summary::before {
+    content: "▸"; display: inline-block;
+    width: 16px; color: var(--ink-faint);
+    transition: transform 0.15s ease;
+  }
+  details.faq[open] summary::before { transform: rotate(90deg); }
+  details.faq p { margin: 8px 0 4px; color: var(--ink-mute); }
+
+  /* Source pills */
+  .pill {
+    display: inline-block;
+    padding: 1px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 600;
+    background: var(--bg-soft); color: var(--ink-mute);
+    border: 1px solid var(--border-mid);
+  }
+  .pill.agent    { background: #eaf2ff; color: #1e4dab; border-color: #b8cdf1; }
+  .pill.slash    { background: #f0eafe; color: #5a35b0; border-color: #d4c2f1; }
+  .pill.notation { background: #ffe9d6; color: #a04a00; border-color: #f0c79a; }
+
+  [data-theme="dark"] .pill.agent    { background: #1a2845; color: #98b8f5; border-color: #2c3f6a; }
+  [data-theme="dark"] .pill.slash    { background: #28213a; color: #c9aff0; border-color: #3e3458; }
+  [data-theme="dark"] .pill.notation { background: #2e1f10; color: #f0c79a; border-color: #4a3318; }
+
+  /* Theme toggle — fixed top-right, identical in both modes */
+  .theme-toggle {
+    position: fixed;
+    top: 16px; right: 16px;
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 1px solid var(--border-mid);
+    background: var(--bg-soft);
+    color: var(--ink);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; line-height: 1;
+    z-index: 100;
+    transition: background 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+    box-shadow: var(--shadow);
+    font-family: inherit;
+  }
+  .theme-toggle:hover {
+    background: var(--bg);
+    transform: scale(1.06);
+    border-color: var(--accent);
+  }
+  .theme-toggle:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  @media print {
+    .theme-toggle { display: none; }
+  }
+
+  footer {
+    margin-top: 64px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+    color: var(--ink-faint);
+    font-size: 13px;
+  }
+
+  @media (max-width: 720px) {
+    .wrap   { padding: 32px 18px 64px; }
+    header.hero h1 { font-size: 28px; }
+    nav.toc ol { columns: 1; }
+    .pipeline { grid-template-columns: 1fr; }
+    .pipeline .step::after {
+      content: "↓";
+      right: 50%; top: auto; bottom: -22px;
+      transform: translateX(50%);
+    }
+    .two-col { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" type="button" aria-label="Toggle dark mode" aria-pressed="false">☾</button>
+
+<script>
+  // Wire the toggle once the DOM is ready. The pre-paint bootstrap in
+  // <head> has already set documentElement.dataset.theme.
+  document.addEventListener('DOMContentLoaded', function () {
+    var KEY = 'docs-theme';
+    var root = document.documentElement;
+    var btn = document.querySelector('.theme-toggle');
+    if (!btn) return;
+    function paint(t) {
+      root.dataset.theme = t;
+      btn.textContent = t === 'dark' ? '☀' : '☾';
+      btn.setAttribute('aria-label',
+        'Switch to ' + (t === 'dark' ? 'light' : 'dark') + ' mode');
+      btn.setAttribute('aria-pressed', t === 'dark' ? 'true' : 'false');
+    }
+    paint(root.dataset.theme || 'light');
+    btn.addEventListener('click', function () {
+      var next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      paint(next);
+      try { localStorage.setItem(KEY, next); } catch (e) {}
+    });
+  });
+</script>
+
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">CommitBot · Internal docs</div>
+  <h1>The Agent: how CommitBot auto-captures commitments</h1>
+  <p class="lede">
+    An end-to-end walkthrough of the opt-in AI pipeline that watches the
+    messages you send in Slack, picks out personal commitments, and files
+    them next to the ones you create by hand — with the same pings,
+    dashboard, and audit trail.
+  </p>
+</header>
+
+<nav class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#tldr">TL;DR</a></li>
+    <li><a href="#mental-model">30-second mental model</a></li>
+    <li><a href="#flow">A message's journey, step by step</a></li>
+    <li><a href="#classifier">The classifier</a></li>
+    <li><a href="#safety">Safety rails</a></li>
+    <li><a href="#user-experience">How users turn it on &amp; use it</a></li>
+    <li><a href="#integrations">Integration touchpoints</a></li>
+    <li><a href="#config">Configuration</a></li>
+    <li><a href="#data">What gets stored</a></li>
+    <li><a href="#ops">Operations &amp; cost</a></li>
+    <li><a href="#faq">FAQ</a></li>
+  </ol>
+</nav>
+
+<!-- =================================================================== -->
+<h2 id="tldr"><span class="num">1.</span> TL;DR</h2>
+
+<p>
+  When a user opts in, every message <em>they</em> send in a Slack channel
+  where CommitBot is present gets quietly stashed in a buffer. Every 30
+  minutes the scheduler wakes up, hands the unprocessed buffer to a
+  Claude classifier, and any verdict above the user's confidence floor
+  (default 75%) becomes a real commitment — same row in the same table
+  as anything created by <code>/commit</code> or the
+  <code>[[commit … ]]</code> notation. Pings get scheduled, the dashboard
+  picks it up, the Home tab shows it in a "Recently auto-captured" strip
+  with a 60-minute Undo button. Anything the agent gets wrong is
+  hard-deleted on Undo so it never pollutes the user's failed-commitments
+  history.
+</p>
+
+<div class="callout">
+  <div class="label">Key invariants</div>
+  <ul style="margin: 6px 0;">
+    <li>The agent only looks at messages the user <em>sends</em>, never received messages.</li>
+    <li>It is <strong>off by default</strong>. Per-user opt-in via App Home.</li>
+    <li>It goes through the same <code>create_commitment</code> service-layer call as every other capture path — dedup, audit log, ping scheduling are identical.</li>
+    <li>False positives are reversed with a hard-delete, not a soft-delete, so outcome statistics stay honest.</li>
+  </ul>
+</div>
+
+<!-- =================================================================== -->
+<h2 id="mental-model"><span class="num">2.</span> 30-second mental model</h2>
+
+<p>
+  Five stages, three boundaries. The arrows are the boundaries — buffer
+  insert, scheduler tick, LLM call, service-layer write, Slack refresh.
+</p>
+
+<div class="pipeline">
+  <div class="step">
+    <div class="icon">💬</div>
+    <div class="lbl">Slack message</div>
+    <div class="sub">user sends in a channel CommitBot is in</div>
+  </div>
+  <div class="step">
+    <div class="icon">📥</div>
+    <div class="lbl">Buffer row</div>
+    <div class="sub">agent_message_buffer table</div>
+  </div>
+  <div class="step">
+    <div class="icon">⏱️</div>
+    <div class="lbl">Scheduler</div>
+    <div class="sub">every 30 min, per opted-in user</div>
+  </div>
+  <div class="step">
+    <div class="icon">🧠</div>
+    <div class="lbl">Classifier</div>
+    <div class="sub">Claude Haiku 4.5 (or stub fallback)</div>
+  </div>
+  <div class="step">
+    <div class="icon">✅</div>
+    <div class="lbl">Commitment</div>
+    <div class="sub">if confidence ≥ floor</div>
+  </div>
+</div>
+
+<p>
+  Everything downstream of the commitment — pings, Home, dashboard,
+  reassignments, snooze, archive — is the existing CommitBot pipeline.
+  The agent's job ends the moment <code>create_commitment</code> returns
+  a row.
+</p>
+
+<!-- =================================================================== -->
+<h2 id="flow"><span class="num">3.</span> A message's journey, step by step</h2>
+
+<p>
+  Suppose Alice has opted in and types <em>"I'll send the design doc by
+  Friday EOD"</em> in <code>#design</code>. Here's exactly what happens.
+</p>
+
+<div class="flow">
+
+  <div class="node">
+    <div class="title">1. Slack delivers a <code>message</code> event</div>
+    <div class="where">app/slack_app.py — Bolt event handler</div>
+    <div class="body">
+      Slack's Events API POSTs to <code>/slack/events</code>. Bolt validates the
+      signing secret, deserialises the event, and dispatches to the
+      <code>@bolt_app.event("message")</code> handler. The handler resolves the
+      sender's <code>User</code> row and checks they're onboarded.
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">2. Message gets buffered (if opted in)</div>
+    <div class="where">app/services/agent.py · <code>buffer_message()</code></div>
+    <div class="body">
+      Before the existing notation-pattern match runs, the handler calls
+      <code>buffer_message()</code>. It refuses to buffer if the user
+      hasn't opted in, the text is empty, or the same
+      <code>(user, channel, ts)</code> already exists (Slack retries can
+      re-deliver the same event). The insert is wrapped in a
+      <code>SAVEPOINT</code> so a duplicate-key collision can't roll back
+      the surrounding handler — the notation capture, if any, still commits.
+<pre><code><span class="tok-kw">with</span> db.<span class="tok-fn">begin_nested</span>():
+    db.<span class="tok-fn">add</span>(row)
+    db.<span class="tok-fn">flush</span>()    <span class="tok-com"># IntegrityError → savepoint rolls back, return None</span></code></pre>
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">3. Scheduler ticks</div>
+    <div class="where">app/scheduler.py · <code>scan_for_commitments()</code></div>
+    <div class="body">
+      APScheduler fires every <code>AGENT_SCAN_INTERVAL_MINUTES</code>
+      (default 30). It opens a fresh DB session and calls
+      <code>agent.scan_all()</code>, which selects every user with
+      <code>agent_enabled = True</code> and runs <code>scan_user()</code>
+      for each one. Failures inside <code>scan_user</code> are caught
+      per-user — one user's bad batch doesn't block anyone else's.
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">4. Buffer drain</div>
+    <div class="where">app/services/agent.py · <code>scan_user()</code></div>
+    <div class="body">
+      Up to 30 unprocessed rows are read in <code>created_at</code> order
+      and shaped into <code>HarvestedMessage</code> objects. The batch
+      size is bounded by the model's output-token budget — each verdict
+      object is ~80 tokens, and the API call asks for 4096 max.
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">5. Classify</div>
+    <div class="where">app/services/llm.py · <code>AnthropicProvider.classify()</code></div>
+    <div class="body">
+      One Anthropic Messages API call per batch. The prompt is prefilled
+      with <code>[</code> so the model continues a JSON array without
+      preamble; the response is glued back together and parsed. If the
+      model truncates mid-array, a best-effort repair trims to the last
+      complete <code>}</code> and closes the array — any partial verdict
+      is dropped.
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">6. Apply the verdict</div>
+    <div class="where">app/services/agent.py · loop body of <code>scan_user()</code></div>
+    <div class="body">
+      Each row is processed inside its own <code>SAVEPOINT</code> so a
+      race on one row can't roll back the others in the batch. If the
+      verdict is below the user's confidence floor (default 75%) the row
+      is marked processed and dropped. Otherwise:
+      <ul>
+        <li><strong>Recipients</strong> are extracted from the message text via the same regex the notation handler uses (<code>&lt;@U…&gt;</code> Slack mentions plus plain <code>@name</code>).</li>
+        <li><strong>Deadline hint</strong> from the LLM is parsed as ISO-8601 and rejected if it's in the past or more than a year out.</li>
+        <li><code>commit_svc.create_commitment(…, source=AGENT)</code> creates the row. The same channel/ts dedup applies — if a notation got there first, the existing row is returned and not stomped.</li>
+        <li><code>agent_confidence</code> and <code>agent_rationale</code> are stamped on the new row for the Home strip and dashboard.</li>
+        <li><code>schedule_initial_ping()</code> queues the first Ping.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">7. Home tab refresh</div>
+    <div class="where">app/scheduler.py + app/slack_app.py · <code>_refresh_home()</code></div>
+    <div class="body">
+      After the session commits, the scheduler calls
+      <code>views.publish</code> for each user with at least one new
+      capture. They see the row appear under <em>Recently auto-captured</em>
+      with an Undo button.
+    </div>
+  </div>
+
+  <div class="node">
+    <div class="title">8. Pings start firing</div>
+    <div class="where">app/scheduler.py · <code>process_due_pings()</code></div>
+    <div class="body">
+      The 60-second ping loop picks up the new Ping like any other,
+      delivers it as a DM (or logs it under <code>DRY_RUN_PINGS</code>),
+      then schedules the next one using the same cadence calculator that
+      <code>/commit</code> captures use.
+    </div>
+  </div>
+
+</div>
+
+<!-- =================================================================== -->
+<h2 id="classifier"><span class="num">4.</span> The classifier</h2>
+
+<p>
+  The agent talks to an <code>LLMProvider</code> protocol — neither the
+  buffer drain nor the service layer knows which implementation is on
+  the other end. Two ship in-tree:
+</p>
+
+<div class="two-col">
+  <div class="card">
+    <h4>AnthropicProvider <span class="pill agent">production</span></h4>
+    <p>
+      Uses the official <code>anthropic</code> SDK against
+      <code>claude-haiku-4-5</code> by default (configurable). One
+      Messages API call per batch, prefilled with <code>[</code> so the
+      response is a clean JSON array. Budgeted at 4096 output tokens
+      for a 30-message batch.
+    </p>
+  </div>
+  <div class="card">
+    <h4>StubProvider <span class="pill">dev/tests</span></h4>
+    <p>
+      Deterministic regex classifier — no network, no key. Matches
+      patterns like <em>"I'll …"</em>, <em>"I will …"</em>, <em>"I can
+      pick up …"</em> at calibrated confidences, with anti-patterns for
+      hypotheticals, low-conviction qualifiers, and past tense. Used
+      automatically when <code>ANTHROPIC_API_KEY</code> is empty.
+    </p>
+  </div>
+</div>
+
+<h3>The prompt, in one line</h3>
+<p>
+  Three load-bearing pieces, kept terse because the prompt re-sends on
+  every batch and verbosity is pure cost:
+</p>
+<ol>
+  <li><strong>Examples on both sides.</strong> Positive ("I'll send the spec by Friday") and negative ("I'll think about it", "Maybe I'll grab lunch", "John should fix that"). The negatives teach the false-positive shape — vague intent, hypothetical, third-party action, past tense.</li>
+  <li><strong>A JSON schema.</strong> Each verdict has <code>message_id</code> (echoed verbatim, used to match back to buffer rows — the service rejects any id we didn't send, so model hallucinations are filtered), <code>is_commitment</code>, <code>confidence</code>, <code>rationale</code>, <code>deadline_hint</code>, <code>recipient_hints</code>.</li>
+  <li><strong>Calibration bands.</strong> ≥0.90 = unambiguous; 0.75–0.90 = clear but fuzzy edges; 0.50–0.75 = real ambiguity, rationale should explain; &lt;0.50 = not a commitment.</li>
+</ol>
+
+<h3>Prompt-injection containment</h3>
+<p>
+  User messages are user-controlled input, so they go through
+  <code>json.dumps()</code> before interpolation into the prompt. A
+  message containing <code>"</code> or a hand-crafted JSON object can't
+  close the prompt's quoted string and inject fake verdicts.
+</p>
+
+<!-- =================================================================== -->
+<h2 id="safety"><span class="num">5.</span> Safety rails</h2>
+
+<table>
+  <thead>
+    <tr><th>Rail</th><th>Where</th><th>What it does</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Opt-in</td>
+      <td><code>users.agent_enabled</code></td>
+      <td>Defaults to <code>FALSE</code>. The buffer write is gated on it; toggle lives on App Home.</td>
+    </tr>
+    <tr>
+      <td>Dry-run</td>
+      <td><code>AGENT_DRY_RUN</code></td>
+      <td>Ships ON. Classifier runs, verdicts are logged, but no commitment is written and no buffer row is marked processed (so reruns are deterministic).</td>
+    </tr>
+    <tr>
+      <td>Confidence floor</td>
+      <td><code>AGENT_CONFIDENCE_FLOOR</code> + <code>users.agent_confidence_floor_pct</code></td>
+      <td>Default 0.75. Per-user override stored as a percent. Verdicts below the effective floor are dropped silently.</td>
+    </tr>
+    <tr>
+      <td>Hard-delete Undo</td>
+      <td><code>undo_agent_capture()</code></td>
+      <td>Within <code>AGENT_UNDO_WINDOW_MINUTES</code> (default 60), the inline Undo button hard-deletes the row. False positives don't end up in the user's failed-commitments stats.</td>
+    </tr>
+    <tr>
+      <td>Sender-only</td>
+      <td>The system prompt + <code>buffer_message()</code> entry condition</td>
+      <td>The handler buffers <em>the sender's</em> messages keyed on <code>owner.agent_enabled</code>. Messages received from other people are never classified.</td>
+    </tr>
+    <tr>
+      <td>Dedup with other capture paths</td>
+      <td><code>UNIQUE(workspace, channel, ts)</code> on commitments + <code>find_existing_by_slack_message</code></td>
+      <td>If a <code>[[commit …]]</code> notation already captured the same message, the agent path returns the existing row and skips stamping provenance.</td>
+    </tr>
+    <tr>
+      <td>Per-row savepoints</td>
+      <td><code>scan_user()</code></td>
+      <td>Each row's work is wrapped in <code>db.begin_nested()</code> so one race or DB hiccup can't roll back the batch's other successful captures.</td>
+    </tr>
+    <tr>
+      <td>Buffer retention</td>
+      <td><code>AGENT_BUFFER_RETENTION_DAYS</code> (default 7)</td>
+      <td>Daily prune job removes raw message text after the window. Even with the agent off, we don't hoard Slack content.</td>
+    </tr>
+    <tr>
+      <td>Deadline guardrail</td>
+      <td><code>_parse_deadline_hint()</code></td>
+      <td>Rejects ISO-8601 hints that are in the past or more than 365 days out — better no deadline than a wrong one.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =================================================================== -->
+<h2 id="user-experience"><span class="num">6.</span> How users turn it on &amp; use it</h2>
+
+<h3>Turn it on</h3>
+<ol>
+  <li>Open CommitBot's App Home in Slack.</li>
+  <li>Find the agent status strip at the top — it shows <code>:zzz: Agent: off</code>, the configured model, and the floor.</li>
+  <li>Click <strong>Turn agent on</strong>. The chip flips to <code>:robot_face: Agent: ON</code>, a <strong>Scan recent messages</strong> button appears, and the buffer starts collecting.</li>
+</ol>
+
+<h3>Normal use</h3>
+<p>
+  Type as you would in any Slack channel where CommitBot is invited. You
+  don't need to use <code>/commit</code>, the <code>[[…]]</code>
+  notation, or the right-click shortcut for the agent to work — but you
+  can still use all of them. The agent is additive.
+</p>
+
+<h3>Review captures</h3>
+<p>
+  Every 30 minutes (or sooner if you click <em>Scan recent messages</em>),
+  any new auto-captures appear under <em>Recently auto-captured</em> on
+  Home, sorted newest-first. Each row shows the captured text, the
+  model's confidence percentage, the rationale, and three actions:
+</p>
+<ul>
+  <li><strong>Undo (delete)</strong> — within 60 minutes. Hard-deletes the row.</li>
+  <li><strong>Set deadline</strong> — opens the same date-time picker as for hand-captured commitments.</li>
+  <li><strong>Mark done</strong> — completes it.</li>
+</ul>
+
+<div class="callout warn">
+  <div class="label">Important</div>
+  <p>
+    The agent runs the buffer through the LLM in batches, not on every
+    message — so a freshly-sent message won't show up as a capture
+    instantly. Either wait for the next scheduled scan or hit
+    <em>Scan recent messages</em> on Home.
+  </p>
+</div>
+
+<!-- =================================================================== -->
+<h2 id="integrations"><span class="num">7.</span> Integration touchpoints</h2>
+
+<p>
+  Five seams where the agent plugs into the rest of CommitBot. None of
+  them are new code paths — the agent reuses what was already there.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Surface</th><th>How the agent uses it</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Slack <code>message</code> events</strong></td>
+      <td>Existing Bolt handler that already powers notation capture. The agent inserts <code>buffer_message()</code> as a pre-step, gated on <code>owner.agent_enabled</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>Service layer</strong> (<code>commit_svc.create_commitment</code>)</td>
+      <td>Single function called by every capture path — <code>/commit</code>, notation, shortcut, and now agent. Same dedup, same audit log (<code>CommitmentEdit</code>), same recipient handling.</td>
+    </tr>
+    <tr>
+      <td><strong>Ping scheduler</strong></td>
+      <td>The agent calls <code>schedule_initial_ping()</code>, same helper the notation path calls. The 60s ping loop has zero knowledge of which capture path produced a Ping.</td>
+    </tr>
+    <tr>
+      <td><strong>App Home</strong></td>
+      <td>New <code>_home_agent_blocks()</code> renders a status strip plus the recently-captured list. Action handlers <code>agent_toggle</code>, <code>agent_scan_now</code>, <code>agent_undo::&lt;id&gt;</code> handle clicks.</td>
+    </tr>
+    <tr>
+      <td><strong>Dashboard</strong></td>
+      <td>Agent rows render with a distinct source pill <span class="pill agent">AGENT</span> alongside <span class="pill slash">SLASH_COMMAND</span> and <span class="pill notation">NOTATION</span>. Same filtering and tabs.</td>
+    </tr>
+    <tr>
+      <td><strong>APScheduler</strong></td>
+      <td>Two new jobs: <code>agent_scan</code> (interval = <code>AGENT_SCAN_INTERVAL_MINUTES</code>) and <code>agent_prune_buffer</code> (daily).</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- =================================================================== -->
+<h2 id="config"><span class="num">8.</span> Configuration</h2>
+
+<p>All knobs live in <code>app/config.py</code> and ship in <code>.env.example</code>.</p>
+
+<table>
+  <thead>
+    <tr><th>Env var</th><th>Default</th><th>Purpose</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>AGENT_PROVIDER</code></td><td><code>anthropic</code></td><td><code>anthropic</code> or <code>stub</code>. Falls back to stub on any setup error.</td></tr>
+    <tr><td><code>ANTHROPIC_API_KEY</code></td><td><em>(unset)</em></td><td>Required for the Anthropic provider; absence triggers the stub fallback.</td></tr>
+    <tr><td><code>AGENT_MODEL</code></td><td><code>claude-haiku-4-5-20251001</code></td><td>Any current Claude model the API accepts.</td></tr>
+    <tr><td><code>AGENT_DRY_RUN</code></td><td><code>true</code></td><td>Run the pipeline without writing anything. Switch off when you're ready to ship live captures.</td></tr>
+    <tr><td><code>AGENT_SCAN_INTERVAL_MINUTES</code></td><td><code>30</code></td><td>How often the scheduler drains buffers. Floored at 1 minute.</td></tr>
+    <tr><td><code>AGENT_CONFIDENCE_FLOOR</code></td><td><code>0.75</code></td><td>System-wide floor. Per-user override sits in <code>users.agent_confidence_floor_pct</code>.</td></tr>
+    <tr><td><code>AGENT_UNDO_WINDOW_MINUTES</code></td><td><code>60</code></td><td>How long the inline Undo button shows on Home.</td></tr>
+    <tr><td><code>AGENT_BUFFER_RETENTION_DAYS</code></td><td><code>7</code></td><td>How long unscanned and scanned buffer rows live before the daily prune.</td></tr>
+  </tbody>
+</table>
+
+<h3>Going live, the safe sequence</h3>
+<ol>
+  <li>Set <code>ANTHROPIC_API_KEY</code> in the deployment env.</li>
+  <li>Leave <code>AGENT_DRY_RUN=true</code>. Opt one or two trusted users in and watch the logs — every classified row prints a one-line summary.</li>
+  <li>Inspect a sample for false positives. Adjust the prompt if needed.</li>
+  <li>Flip <code>AGENT_DRY_RUN=false</code>. Live captures begin on the next scan.</li>
+</ol>
+
+<!-- =================================================================== -->
+<h2 id="data"><span class="num">9.</span> What gets stored</h2>
+
+<h3><code>agent_message_buffer</code> (new table)</h3>
+<p>
+  Transient staging area for messages awaiting classification. Pruned
+  after <code>AGENT_BUFFER_RETENTION_DAYS</code>. Unique on
+  <code>(user_id, slack_channel_id, slack_message_ts)</code> so Slack
+  event retries don't double-buffer.
+</p>
+<pre><code><span class="tok-kw">class</span> <span class="tok-fn">AgentMessageBuffer</span>:
+  id                 <span class="tok-com"># uuid pk</span>
+  user_id            <span class="tok-com"># FK users.id, cascade</span>
+  slack_channel_id   <span class="tok-str">"C…"</span>
+  slack_message_ts   <span class="tok-str">"1700000000.000100"</span>
+  text               <span class="tok-com"># truncated at 2000 chars on insert</span>
+  created_at
+  processed_at       <span class="tok-com"># non-null once scan has examined it</span></code></pre>
+
+<h3><code>users</code> additions</h3>
+<table>
+  <thead><tr><th>Column</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>agent_enabled</code></td><td>BOOLEAN NOT NULL DEFAULT 0</td><td>Per-user opt-in.</td></tr>
+    <tr><td><code>agent_confidence_floor_pct</code></td><td>INTEGER NULL</td><td>Optional override of the system floor, stored as a percent (0–100).</td></tr>
+  </tbody>
+</table>
+
+<h3><code>commitments</code> additions</h3>
+<table>
+  <thead><tr><th>Column</th><th>Type</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>source</code></td><td>ENUM</td><td>New value <code>AGENT</code> alongside <code>SLASH_COMMAND</code>, <code>NOTATION</code>, etc.</td></tr>
+    <tr><td><code>agent_confidence</code></td><td>FLOAT NULL</td><td>Verdict confidence (0.0–1.0). Only set when <code>source = AGENT</code>.</td></tr>
+    <tr><td><code>agent_rationale</code></td><td>TEXT NULL</td><td>One-sentence rationale rendered as a context line on Home.</td></tr>
+  </tbody>
+</table>
+
+<div class="callout ok">
+  <div class="label">Migration</div>
+  <p>
+    Schema evolves via <code>_apply_lightweight_migrations()</code> in
+    <code>app/db.py</code> — no Alembic. Existing DBs get the new
+    columns via additive <code>ALTER TABLE</code> on startup; fresh DBs
+    have them created by <code>Base.metadata.create_all()</code>. Both
+    paths are idempotent.
+  </p>
+</div>
+
+<!-- =================================================================== -->
+<h2 id="ops"><span class="num">10.</span> Operations &amp; cost</h2>
+
+<h3>Scheduled jobs the agent adds</h3>
+<ul>
+  <li><code>agent_scan</code> — every 30 minutes (configurable). Drains every opted-in user's buffer.</li>
+  <li><code>agent_prune_buffer</code> — every 24 hours. Drops buffer rows older than the retention window.</li>
+</ul>
+
+<h3>What an API call costs (order-of-magnitude)</h3>
+<p>
+  Each scan call for one user batches up to 30 messages into a single
+  Anthropic request:
+</p>
+<ul>
+  <li>Input: ~120 tokens of system prompt + ~25 tokens × 30 messages ≈ <strong>~900 tokens</strong>.</li>
+  <li>Output: ~80 tokens × 30 verdicts ≈ <strong>~2400 tokens</strong>.</li>
+</ul>
+<p>
+  At Haiku-class pricing, that's a fraction of a cent per scan. A user
+  who actually fills 30 messages between scans is unusual — most scans
+  process 0–5 rows.
+</p>
+
+<h3>Failure modes &amp; how the system responds</h3>
+<table>
+  <thead><tr><th>Failure</th><th>What happens</th></tr></thead>
+  <tbody>
+    <tr><td>Anthropic API down / rate-limited</td><td><code>AnthropicProvider</code> catches the exception, returns <code>[]</code>. No buffer rows are marked processed, so the next scan retries.</td></tr>
+    <tr><td>API key absent or invalid</td><td><code>get_provider()</code> logs and falls back to <code>StubProvider</code>. The agent keeps running on regex-quality verdicts.</td></tr>
+    <tr><td>Model returns truncated JSON</td><td><code>_attempt_json_repair()</code> trims to the last complete <code>}</code> and closes the array. Partial verdicts are dropped — their buffer rows remain unprocessed for the next sweep.</td></tr>
+    <tr><td>Model hallucinates a <code>message_id</code> we didn't send</td><td>Filtered against <code>valid_ids</code>, dropped silently.</td></tr>
+    <tr><td>Race between scheduler and "Scan now" button</td><td>Per-row <code>SAVEPOINT</code> in <code>scan_user</code> isolates the colliding row; everything else commits cleanly.</td></tr>
+    <tr><td>Slack re-delivers a message event</td><td><code>UniqueConstraint</code> on the buffer table catches it; <code>buffer_message()</code> returns <code>None</code> and the surrounding transaction is unaffected.</td></tr>
+  </tbody>
+</table>
+
+<!-- =================================================================== -->
+<h2 id="faq"><span class="num">11.</span> FAQ</h2>
+
+<details class="faq">
+  <summary>Does the agent read messages that <em>other people</em> send to me?</summary>
+  <p>
+    No. The buffer entry is gated on the <em>sender's</em>
+    <code>agent_enabled</code> flag, and the classifier prompt is
+    explicit: "decide whether the SENDER is making a personal
+    commitment." Even if a teammate types "I'll send it" in your DM,
+    it's their flag that decides whether it gets buffered for them, not
+    yours.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>What channels does it watch?</summary>
+  <p>
+    Any channel CommitBot has been invited to and that sends message
+    events to the bot. We don't pull history on demand — we react to
+    live events. If you want the agent to see a channel, invite the bot.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>Can the agent capture a message someone else marked with the notation, like <code>[[commit …]]</code>?</summary>
+  <p>
+    The same Slack message can match both the notation regex and the
+    agent classifier. The first one to write wins by virtue of the
+    <code>UNIQUE(workspace, channel, ts)</code> constraint. If the
+    notation captures first, the agent's <code>create_commitment</code>
+    call returns the existing row and the agent simply doesn't stamp
+    its provenance on it — no duplicate, no overwrite.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>What if the agent gets one wrong?</summary>
+  <p>
+    Within 60 minutes of capture, the row shows an inline Undo button
+    on Home. Clicking it hard-deletes the commitment — it leaves no
+    trace, doesn't count as a failed commitment, doesn't show in the
+    Bin. After 60 minutes you can still soft-delete it from the
+    dashboard, but it'll behave like any other deletion.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>Why dry-run by default?</summary>
+  <p>
+    The first thing you want when you enable an LLM-driven feature on a
+    real workspace is to see what it <em>would</em> do without it
+    actually doing anything. Dry-run logs every verdict so you can
+    inspect calibration and prompt quality before flipping the switch.
+    Once you're satisfied, set <code>AGENT_DRY_RUN=false</code>.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>What happens to my data if I turn the agent off?</summary>
+  <p>
+    The toggle just flips <code>users.agent_enabled</code> to
+    <code>false</code>. New messages stop being buffered; the daily
+    prune job removes any unscanned buffer rows after the retention
+    window. Commitments already created stay — they're regular
+    commitments at that point, indistinguishable from manual ones
+    except for the source pill and the rationale text.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>How do I add my own classifier?</summary>
+  <p>
+    Implement the <code>LLMProvider</code> Protocol (a single
+    <code>classify(messages)</code> method returning a list of
+    <code>ClassifiedCandidate</code>), register it in
+    <code>get_provider()</code>, and point <code>AGENT_PROVIDER</code>
+    at it. Neither the agent service nor the schedulers need to change.
+  </p>
+</details>
+
+<details class="faq">
+  <summary>Where do I look in the code first?</summary>
+  <p>
+    Start with <code>app/services/agent.py</code> — the orchestration is
+    ~400 lines and reads top-to-bottom. From there:
+    <code>app/services/llm.py</code> for the prompt and providers,
+    <code>app/slack_app.py</code> for the message handler and Home UI,
+    <code>app/scheduler.py</code> for the periodic jobs.
+    <code>tests/test_agent.py</code> exercises the contract end-to-end
+    against the stub provider.
+  </p>
+</details>
+
+<footer>
+  This page is part of CommitBot's <code>docs/</code> directory.
+  Last touched in the same change as the agent system itself
+  (see <code>git log -- app/services/agent.py</code>).
+</footer>
+
+</div>
+</body>
+</html>
