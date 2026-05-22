@@ -118,9 +118,27 @@ DO NOT COUNT
   - "I'll think about it"               (too vague to track)
   - "Maybe I'll grab lunch"             (low-conviction)
   - "John should fix that"              (about someone else)
+  - "He'll handle that bug"             (third party, not the sender)
+  - "She said she'd do it tomorrow"     (reporting someone else's commitment)
+  - "You will do it tomorrow right??"   (asking someone else, not promising)
+  - "Will you finish by Friday?"        (question to someone else)
+  - "Can you send the spec tomorrow?"   (request to someone else)
+  - "You should call them tomorrow"     (instructing someone else)
   - "I'll buy you lunch IF X happens"   (hypothetical)
   - "I was going to send it yesterday"  (past, not a new promise)
   - "We need to ship this"              (intent, not personal commitment)
+
+ACTOR RULE (load-bearing): the action's subject must be the SENDER.
+If the verb's subject is "you" / "he" / "she" / "they" / a named third
+party, it's about someone else and IS NOT the sender's commitment —
+even if the rest of the sentence looks promise-shaped (future tense,
+deadline token, etc.). The ONLY exception is a mixed-framing message
+that contains both a first-person clause and a second-person clause:
+"I'll send the spec; will you review tomorrow?" — extract the
+first-person part, ignore the question. If the message is ENTIRELY
+about what the recipient should or will do, return is_commitment: false
+with a short rationale ("addressing someone else, not a personal
+commitment").
 
 For each message return JSON:
   {
@@ -218,6 +236,45 @@ _REJECT_PATTERNS: list[tuple[re.Pattern, str]] = [
      "Past tense, not a new promise"),
 ]
 
+# The actor rule — fires BEFORE _REJECT_PATTERNS so it can short-circuit
+# any positive match from _COMMITMENT_PATTERNS. Catches two failure
+# modes the regex layer was previously blind to:
+#
+#   "You will do it tomorrow right??"  — second-person; sender is asking
+#                                         someone else, not promising
+#   "He'll handle that bug by Friday"  — third-person; about someone else
+#
+# Strategy: detect a non-first-person actor adjacent to a future-tense /
+# modal verb, then *also* check the message lacks any first-person token.
+# The second check means mixed-framing messages still pass through to
+# the commitment patterns — e.g. "I'll send the spec; will you review?"
+# has both, so the actor rule doesn't fire and we capture the first-
+# person promise.
+_NON_FIRST_PERSON_ACTOR = re.compile(
+    # Subject pronoun + future/modal: "you will", "he'll", "they should", …
+    r"\b(you|he|she|they)\b\s*"
+    r"(['’]ll|['’]d|will|should|can|could|would|need|needs|gotta|gonna|"
+    r"is\s+going\s+to|are\s+going\s+to)\b"
+    # Interrogative inversion: "Will you …?", "Can you …?", "Could she …?"
+    r"|^\s*(will|can|could|would|are|is|do|does)\s+(you|he|she|they)\b"
+    # Polite-request shape anywhere in the message: "can you …", "could you …"
+    r"|\b(can|could|would)\s+(you|he|she|they)\b",
+    re.I | re.MULTILINE,
+)
+
+# A first-person promise token rescues the message — if it's present
+# anywhere, the actor rule doesn't reject. Keep this strict: we want
+# real first-person promise verbs, not weak signals like "me" or "my"
+# ("get back to me" / "tell me" would over-trigger).
+_FIRST_PERSON_PROMISE_TOKEN = re.compile(
+    r"\bi['’]?ll\b"
+    r"|\bi\s+(will|can|should|need|must|might|may|am|have|had|just|already)\b"
+    r"|\bi['’]?m\s+going\s+to\b"
+    r"|\bremind\s+me\s+to\b"
+    r"|\bdon['’]?t\s+let\s+me\s+forget\b",
+    re.I,
+)
+
 _DEADLINE_TOKENS = (
     "today", "tomorrow", "tonight", "this week", "next week", "monday",
     "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -244,6 +301,21 @@ class StubProvider:
                 out.append(ClassifiedCandidate(
                     message_id=m.id, is_commitment=False, confidence=0.0,
                     rationale="empty message",
+                ))
+                continue
+
+            # Actor rule: a "you/he/she/they will X" message isn't the
+            # sender's commitment regardless of how promise-shaped it
+            # looks. Skip *unless* a first-person clause coexists, in
+            # which case let the regular patterns handle it (and they'll
+            # capture the first-person part).
+            if (
+                _NON_FIRST_PERSON_ACTOR.search(text)
+                and not _FIRST_PERSON_PROMISE_TOKEN.search(text)
+            ):
+                out.append(ClassifiedCandidate(
+                    message_id=m.id, is_commitment=False, confidence=0.15,
+                    rationale="Addressing someone else — not a personal commitment",
                 ))
                 continue
 

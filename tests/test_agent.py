@@ -119,6 +119,97 @@ def test_stub_rejects_third_party_action():
 
 
 # ---------------------------------------------------------------------------
+# Actor rule — second-person / third-person framings aren't the sender's
+# commitment, even when they look promise-shaped (future verb + deadline).
+# Regression: an "You will do it tomorrow right??" message was being
+# captured at 0.83 confidence because "will do" matched the future-tense
+# pattern and "tomorrow" added the deadline boost — but the actor is the
+# recipient, not the sender.
+# ---------------------------------------------------------------------------
+
+def test_stub_rejects_pure_second_person_declarative():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="You will do it tomorrow right??"),
+    ])
+    assert out[0].is_commitment is False
+    assert "someone else" in out[0].rationale.lower()
+
+
+def test_stub_rejects_will_you_question():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="Will you finish the report by Friday?"),
+    ])
+    assert out[0].is_commitment is False
+
+
+def test_stub_rejects_can_you_request():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="Can you send the spec tomorrow?"),
+    ])
+    assert out[0].is_commitment is False
+
+
+def test_stub_rejects_youll_contraction():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="You'll handle that tomorrow, right?"),
+    ])
+    assert out[0].is_commitment is False
+
+
+def test_stub_rejects_third_person_future():
+    """'He'll do it tomorrow' — same shape as the buggy capture but with
+    a different non-sender actor."""
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="He'll send the report by Friday"),
+    ])
+    assert out[0].is_commitment is False
+
+
+def test_stub_rejects_they_will():
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="They will deploy it tomorrow"),
+    ])
+    assert out[0].is_commitment is False
+
+
+def test_stub_accepts_mixed_first_and_second_person():
+    """A first-person clause anywhere in the message rescues it — we
+    extract the sender's promise and ignore the question to the other."""
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1",
+                         text="I'll send the spec tonight; will you review tomorrow?"),
+    ])
+    assert out[0].is_commitment is True
+    assert out[0].confidence >= 0.85
+
+
+def test_stub_accepts_remind_me_even_with_second_person():
+    """'remind me to ask you tomorrow' contains 'you' but is still a
+    self-directed reminder — the first-person token rescues it."""
+    from app.services.llm import HarvestedMessage, StubProvider
+    out = StubProvider().classify([
+        HarvestedMessage(id="m1", text="Remind me to ask you about the report tomorrow"),
+    ])
+    assert out[0].is_commitment is True
+
+
+def test_is_likely_candidate_rejects_second_person(db_session):
+    """The instant-trigger pre-filter inherits the actor rule. A 'you will'
+    message shouldn't fire the LLM scan."""
+    from app.services import agent as agent_svc
+    assert agent_svc.is_likely_candidate("You will do it tomorrow right??") is False
+    assert agent_svc.is_likely_candidate("Will you send it by Friday?") is False
+    assert agent_svc.is_likely_candidate("Can you handle that bug?") is False
+
+
+# ---------------------------------------------------------------------------
 # Buffer + scan
 # ---------------------------------------------------------------------------
 
